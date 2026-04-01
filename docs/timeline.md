@@ -2,6 +2,24 @@
 
 This document tracks the evolution of the Persona extension, providing a history of major features and technical updates for contributors.
 
+## v2.1.1 - Tab Management Fixes (2026-04-01)
+
+This patch fixes critical bugs in the workspace tab management system and improves the real-time UI responsiveness.
+
+### Bug Fixes
+- **Save Tabs crash**: Fixed `ReferenceError: profile is not defined` in `handleSaveTabsToProfile` (`background.js`) — the console.log referenced an undefined `profile` variable instead of `profiles[profileIndex]`.
+- **Wrong window on save**: `saveTabsToProfile()` and `saveProfile()` in `popup.js` always grabbed `windows[0]` (first window) instead of the user's focused window. Changed to `chrome.windows.getLastFocused()`.
+- **Tabs lost on "Save Current Tabs"**: "Save Current Tabs" completely replaced the workspace's tabs with all browser tabs, undoing manual removals. Now uses a **merge strategy** — only new tabs (by URL) are added; existing and manually kept tabs are preserved. Applied to both `handleSaveTabsToProfile` and `handleHibernateProfile`.
+
+### UX Improvements
+- **Real-time UI updates**: Tab add, remove, and save operations now update the UI instantly using response data instead of waiting for a storage round-trip. `openProfileDetails()` accepts an optional `tabsOverride` parameter for immediate rendering. Workspace list tab count also refreshes after changes.
+
+### Technical Changes
+- **Merge logic**: Added URL-based deduplication (`Set`) in `handleSaveTabsToProfile` and `handleHibernateProfile` to merge incoming browser tabs with existing workspace tabs.
+- **`openProfileDetails` signature**: Extended to accept `(profileId, tabsOverride)` for optimistic UI updates before storage confirmation.
+
+---
+
 ## v2.1.0 - The Productivity Update (2026-03-22)
 
 This update focuses on rapid navigation and workflow efficiency by introducing a Raycast-inspired interface.

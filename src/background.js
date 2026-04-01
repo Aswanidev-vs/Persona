@@ -426,8 +426,8 @@ async function handleSaveTabsToProfile(payload, sendResponse) {
     // Get all tabs from the window
     const tabs = await chrome.tabs.query({ windowId: windowId });
     
-    // Save tab data (URL, title, favicon)
-    const tabData = tabs
+    // Build tab data from current window
+    const newTabData = tabs
       .filter(tab => tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://'))
       .map(tab => ({
         url: tab.url,
@@ -435,11 +435,19 @@ async function handleSaveTabsToProfile(payload, sendResponse) {
         favIconUrl: tab.favIconUrl || null
       }));
 
-    profiles[profileIndex].tabs = tabData;
+    // Merge: keep existing tabs, only add new ones (match by URL)
+    const existingTabs = profiles[profileIndex].tabs || [];
+    const existingUrls = new Set(existingTabs.map(t => t.url));
+    const mergedTabs = [
+      ...existingTabs,
+      ...newTabData.filter(t => !existingUrls.has(t.url))
+    ];
+
+    profiles[profileIndex].tabs = mergedTabs;
     await saveProfiles(profiles);
 
-    console.log('Tabs saved to profile:', profile.name, 'Tab count:', tabData.length);
-    sendResponse({ success: true, tabs: tabData });
+    console.log('Tabs merged to profile:', profiles[profileIndex].name, 'Tab count:', mergedTabs.length, '(added', newTabData.filter(t => !existingUrls.has(t.url)).length, 'new)');
+    sendResponse({ success: true, tabs: mergedTabs });
   } catch (error) {
     console.error('Save tabs failed:', error);
     sendResponse({ success: false, error: error.message });
@@ -590,9 +598,9 @@ async function handleHibernateProfile(payload, sendResponse) {
 
     if (profile.windowId) {
       try {
-        // Save tabs before closing
+        // Save tabs before closing (merge with existing to preserve manually kept tabs)
         const tabs = await chrome.tabs.query({ windowId: profile.windowId });
-        const tabData = tabs
+        const newTabData = tabs
           .filter(tab => tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://'))
           .map(tab => ({
             url: tab.url,
@@ -600,7 +608,13 @@ async function handleHibernateProfile(payload, sendResponse) {
             favIconUrl: tab.favIconUrl || null
           }));
 
-        profiles[profileIndex].tabs = tabData;
+        // Merge: keep existing tabs, only add new ones (match by URL)
+        const existingTabs = profiles[profileIndex].tabs || [];
+        const existingUrls = new Set(existingTabs.map(t => t.url));
+        profiles[profileIndex].tabs = [
+          ...existingTabs,
+          ...newTabData.filter(t => !existingUrls.has(t.url))
+        ];
         
         // Close the window
         await chrome.windows.remove(profile.windowId);

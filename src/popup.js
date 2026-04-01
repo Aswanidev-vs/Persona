@@ -515,10 +515,9 @@ async function saveProfile() {
     let tabs = [];
     
     if (saveTabs) {
-      // Get current window tabs
-      const windows = await chrome.windows.getAll({ populate: true });
-      if (windows.length > 0) {
-        const currentWindow = windows[0];
+      // Get focused window tabs
+      const currentWindow = await chrome.windows.getLastFocused({ populate: true });
+      if (currentWindow) {
         tabs = currentWindow.tabs
           .filter(tab => tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://'))
           .map(tab => ({
@@ -551,12 +550,19 @@ async function saveProfile() {
 
 /**
  * Open profile details view
+ * @param {string} profileId
+ * @param {Array} [tabsOverride] - If provided, render these tabs immediately without fetching from storage
  */
-async function openProfileDetails(profileId) {
+async function openProfileDetails(profileId, tabsOverride) {
   currentProfileId = profileId;
   toggleMainHeader(false);
   document.getElementById('main-view').classList.add('hidden');
   document.getElementById('profile-details-view').classList.remove('hidden');
+
+  // Instant UI update: render tabs from response before fetching from storage
+  if (tabsOverride) {
+    renderProfileTabs(tabsOverride);
+  }
 
   try {
     const response = await chrome.runtime.sendMessage({ action: "GET_PROFILES" });
@@ -580,8 +586,11 @@ async function openProfileDetails(profileId) {
       accountInfoEl.textContent = account ? `Account: ${account.name} (${account.email || account.domain})` : 'Account: Unknown';
     }
 
-    // Render tabs
+    // Re-render tabs from storage to ensure consistency (overwrites the instant update)
     renderProfileTabs(profile.tabs);
+
+    // Update workspace list tab count
+    renderProfiles();
 
   } catch (err) {
     console.error("Error opening profile details:", err);
@@ -708,22 +717,20 @@ async function saveTabsToProfile() {
   btn.textContent = 'Saving...';
 
   try {
-    // Get current window ID
-    const windows = await chrome.windows.getAll({ populate: true });
-    if (windows.length === 0) {
+    // Get the focused window ID
+    const currentWindow = await chrome.windows.getLastFocused({ populate: true });
+    if (!currentWindow) {
       throw new Error('No window found');
     }
 
-    const currentWindow = windows[0];
-    
     const response = await chrome.runtime.sendMessage({
       action: "SAVE_TABS_TO_PROFILE",
       payload: { profileId: currentProfileId, windowId: currentWindow.id }
     });
 
     if (response && response.success) {
-      // Refresh profile details
-      await openProfileDetails(currentProfileId);
+      // Pass merged tabs from response for instant UI update
+      await openProfileDetails(currentProfileId, response.tabs);
     } else {
       alert('Failed to save tabs: ' + (response?.error || 'Unknown error'));
     }
@@ -858,7 +865,8 @@ async function saveTabToProfile() {
 
     if (response && response.success) {
       closeAddTabView();
-      await openProfileDetails(currentProfileId);
+      // Pass tabs from response for instant UI update
+      await openProfileDetails(currentProfileId, response.tabs);
     } else {
       alert('Failed to add tab: ' + (response?.error || 'Unknown error'));
     }
@@ -884,7 +892,8 @@ async function removeTabFromProfile(tabIndex) {
     });
 
     if (response && response.success) {
-      await openProfileDetails(currentProfileId);
+      // Pass tabs from response for instant UI update
+      await openProfileDetails(currentProfileId, response.tabs);
     } else {
       alert('Failed to remove tab: ' + (response?.error || 'Unknown error'));
     }
