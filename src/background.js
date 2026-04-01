@@ -28,6 +28,23 @@ function getDomainFromUrl(url) {
 }
 
 /**
+ * Normalize a URL for comparison purposes
+ * Removes trailing slashes and converts to lowercase to prevent duplicate tabs
+ * when URLs differ only by trailing slash or case
+ */
+function normalizeUrl(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    // Remove trailing slash from pathname (but keep root "/" as "")
+    parsed.pathname = parsed.pathname.replace(/\/$/, '') || '';
+    return parsed.href.toLowerCase();
+  } catch (e) {
+    return url.toLowerCase().replace(/\/$/, '');
+  }
+}
+
+/**
  * Common logic to inject a set of cookies into the browser.
  * Ensures security flags (Secure, HttpOnly, SameSite) and forces session persistence.
  */
@@ -343,6 +360,30 @@ async function handleCreateProfile(payload, sendResponse) {
 async function handleGetProfiles(payload, sendResponse) {
   try {
     const profiles = await getProfiles();
+    
+    // Deduplicate tabs by normalized URL to fix any existing duplicates
+    let needsSave = false;
+    for (const profile of profiles) {
+      if (profile.tabs && profile.tabs.length > 0) {
+        const seen = new Set();
+        const deduped = [];
+        for (const tab of profile.tabs) {
+          const key = normalizeUrl(tab.url);
+          if (!seen.has(key)) {
+            seen.add(key);
+            deduped.push(tab);
+          }
+        }
+        if (deduped.length < profile.tabs.length) {
+          profile.tabs = deduped;
+          needsSave = true;
+        }
+      }
+    }
+    if (needsSave) {
+      await saveProfiles(profiles);
+    }
+    
     sendResponse({ success: true, profiles });
   } catch (error) {
     console.error('Get profiles failed:', error);
@@ -435,18 +476,19 @@ async function handleSaveTabsToProfile(payload, sendResponse) {
         favIconUrl: tab.favIconUrl || null
       }));
 
-    // Merge: keep existing tabs, only add new ones (match by URL)
+    // Merge: keep existing tabs, only add new ones (match by normalized URL)
     const existingTabs = profiles[profileIndex].tabs || [];
-    const existingUrls = new Set(existingTabs.map(t => t.url));
+    const existingUrls = new Set(existingTabs.map(t => normalizeUrl(t.url)));
+    const newTabsFiltered = newTabData.filter(t => !existingUrls.has(normalizeUrl(t.url)));
     const mergedTabs = [
       ...existingTabs,
-      ...newTabData.filter(t => !existingUrls.has(t.url))
+      ...newTabsFiltered
     ];
 
     profiles[profileIndex].tabs = mergedTabs;
     await saveProfiles(profiles);
 
-    console.log('Tabs merged to profile:', profiles[profileIndex].name, 'Tab count:', mergedTabs.length, '(added', newTabData.filter(t => !existingUrls.has(t.url)).length, 'new)');
+    console.log('Tabs merged to profile:', profiles[profileIndex].name, 'Tab count:', mergedTabs.length, '(added', newTabsFiltered.length, 'new)');
     sendResponse({ success: true, tabs: mergedTabs });
   } catch (error) {
     console.error('Save tabs failed:', error);
@@ -608,12 +650,12 @@ async function handleHibernateProfile(payload, sendResponse) {
             favIconUrl: tab.favIconUrl || null
           }));
 
-        // Merge: keep existing tabs, only add new ones (match by URL)
+        // Merge: keep existing tabs, only add new ones (match by normalized URL)
         const existingTabs = profiles[profileIndex].tabs || [];
-        const existingUrls = new Set(existingTabs.map(t => t.url));
+        const existingUrls = new Set(existingTabs.map(t => normalizeUrl(t.url)));
         profiles[profileIndex].tabs = [
           ...existingTabs,
-          ...newTabData.filter(t => !existingUrls.has(t.url))
+          ...newTabData.filter(t => !existingUrls.has(normalizeUrl(t.url)))
         ];
         
         // Close the window
