@@ -10,6 +10,7 @@ It works by capturing session cookies and storing them locally. Switching a work
 - **Sub-groups (Chrome Tab Groups)**: Workspaces automatically capture and restore native Chrome Tab Groups — names, colors, and collapsed state are all preserved.
 - **Import Tab Groups**: Scan your current browser window for native Tab Groups and import them into a new or existing workspace with a single click.
 - **Move / Copy Tabs**: Right-click any page and select "Move Tab to Workspace" or "Copy Tab to Workspace" to instantly send it to any workspace or sub-group.
+- **Detach to Window**: "Pop out" the extension into a standalone, persistent window that stays open even if you click away. Fully responsive and supports full-screen.
 - **Default Workspace**: Tag a specific workspace as "Default" to open it instantly via shortcut.
 - **Workspace Switcher**: A Raycast-style modal (`Alt+Shift+D`) for fuzzy searching and switching between workspaces with arrow keys.
 - **Command Palette**: A global palette (`Alt+Shift+S`) to search across all open tabs, move/copy the active tab to any workspace, and execute quick actions.

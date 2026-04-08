@@ -48,6 +48,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
     document.getElementById('btn-close')?.addEventListener('click', () => window.close());
     
+    document.getElementById('btn-detach')?.addEventListener('click', async () => {
+      await chrome.runtime.sendMessage({ action: "OPEN_FOCUSED_POPUP" });
+      window.close();
+    });
+
+    // Hide detach button if already in a standalone window
+    chrome.windows.getCurrent((win) => {
+      if (win.type === 'popup') {
+        document.getElementById('btn-detach').style.display = 'none';
+        document.body.classList.add('detached');
+      }
+    });
+    
     // Add Esc key listener to close popup
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') window.close();
