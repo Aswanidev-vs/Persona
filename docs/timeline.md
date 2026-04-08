@@ -2,6 +2,24 @@
 
 This document tracks the evolution of the Persona extension, providing a history of major features and technical updates for contributors.
 
+## v2.3.0 - Persistent Window & UI Polish (2026-04-08)
+
+This update focuses on quality-of-life improvements and persistence for heavy users.
+
+### New Features
+- **Detach to Window**: Added a "pop out" icon to the dashboard header, allowing users to move the extension to a standalone persistent window (Bitwarden-style).
+- **Responsive Scaling**: Standalone windows are now fully responsive and can be resized or full-screened without content cropping.
+
+### UX & DX Improvements
+- **Header Contrast Fix**: Replaced dark header icons with high-contrast white icons for better visibility against the purple gradient theme.
+- **Smart Detach Detection**: The detach button automatically hides when the dashboard is already running in a standalone window.
+
+### Technical Changes
+- **CSS Architecture**: Introduced the `.detached` class on `body` to handle dynamic scaling and responsive layout overrides in standalone mode.
+- **IPC Updates**: Integrated the popup detach flow with existing background window management logic.
+
+---
+
 ## v2.2.0 - Sub-groups & Advanced Tab Management (2026-04-08)
 
 This update introduces deep integration with Chrome's native Tab Groups and adds powerful new ways to move tabs between workspaces.

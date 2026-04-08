@@ -62,8 +62,17 @@ html, body {
   color: var(--text-primary);
 }
 
-body {
-  height: 600px;
+/* Detached Mode Scaling */
+body.detached {
+  width: 100vw !important;
+  height: 100vh !important;
+  min-width: 400px;
+  min-height: 600px;
+}
+
+body.detached .app-container {
+  width: 100%;
+  height: 100%;
 }
 
 .app-container {
@@ -88,6 +97,14 @@ body {
   color: white;
   position: relative;
   overflow: hidden;
+}
+
+.app-header .icon-btn {
+  color: white;
+}
+
+.app-header .icon-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .app-header::after {
@@ -513,9 +530,16 @@ body {
 #btn-cancel-create-profile,
 #btn-cancel,
 #btn-back-profile,
-#btn-cancel-add-tab {
+#btn-cancel-add-tab,
+#btn-cancel-import-groups,
+#btn-cancel-tab-action,
+#btn-delete-profile {
   color: white;
   margin-right: 8px;
+}
+
+.add-header .icon-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .view-title {
