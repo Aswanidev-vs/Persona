@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "Persona - Multi Account & Profile Switcher",
+  "version": "2.3.0",
+  "description": "Switch between multiple accounts and manage custom profile workspaces.",
+  "permissions": [
+    "cookies",
+    "storage",
+    "tabs",
+    "tabGroups",
+    "scripting",
+    "activeTab",
+    "windows",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "icons": {
+    "16": "assets/persona.png",
+    "32": "assets/persona.png",
+    "48": "assets/persona.png",
+    "128": "assets/persona.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Persona Account & Profile Switcher",
+    "default_icon": "assets/persona.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "open-profile-1": {
+      "suggested_key": {
+        "default": "Alt+Shift+1"
+      },
+      "description": "Open Default Workspace"
+    },
+    "hibernate-active-profile": {
+      "suggested_key": {
+        "default": "Alt+C"
+      },
+      "description": "Hibernate Active Workspace"
+    },
+    "open-workspace-switcher": {
+      "suggested_key": {
+        "default": "Alt+Shift+D"
+      },
+      "description": "Raycast-style Workspace Switcher"
+    },
+    "open-command-palette": {
+      "suggested_key": {
+        "default": "Alt+Shift+S"
+      },
+      "description": "Quick Command Palette"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none';"
+  }
+}

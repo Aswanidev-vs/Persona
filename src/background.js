@@ -1,0 +1,1108 @@
+// background.js - Core logic for cookie management using built-in chrome.storage
+
+/**
+ * Extract the main domain from a URL (e.g., mail.google.com -> google.com)
+ */
+function getDomainFromUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'chrome:' || parsed.protocol === 'chrome-extension:') return 'google.com'; // Default for internal pages
+
+    const hostname = parsed.hostname;
+    const parts = hostname.split('.');
+
+    // Handle country codes (e.g. google.co.uk)
+    if (parts.length > 2) {
+      const last = parts[parts.length - 1];
+      const secondLast = parts[parts.length - 2];
+      if (last.length === 2 && secondLast.length <= 3) return parts.slice(-3).join('.');
+    }
+
+    if (parts.length >= 2) {
+      return parts.slice(-2).join('.');
+    }
+    return hostname;
+  } catch (e) {
+    return 'google.com'; // Fallback
+  }
+}
+
+/**
+ * Common logic to inject a set of cookies into the browser.
+ * Ensures security flags (Secure, HttpOnly, SameSite) and forces session persistence.
+ */
+async function injectCookies(cookies, domain) {
+  for (const c of cookies) {
+    // Determine the precise URL for this specific cookie's domain and path
+    const protocol = c.secure ? "https:" : "http:";
+    const cleanDomain = c.domain.startsWith('.') ? c.domain.substring(1) : c.domain;
+    const url = `${protocol}//${cleanDomain}${c.path}`;
+
+    const isSecureUrl = protocol === "https:";
+    const lowerName = c.name.toLowerCase();
+    // Keywords that suggest a sensitive authentication/session cookie
+    const isSensitive = lowerName.includes('session') || 
+                        lowerName.includes('token') || 
+                        lowerName.includes('sid') || 
+                        lowerName.includes('auth') || 
+                        lowerName.includes('jwt') ||
+                        lowerName.includes('sid');
+
+    const newCookie = {
+      url: url,
+      name: c.name,
+      value: c.value,
+      path: c.path,
+      // Hardening: Force Secure on HTTPS, and Force HttpOnly for potential session tokens
+      // This protects them from being stolen by malicious scripts (XSS).
+      secure: c.secure || isSecureUrl,
+      httpOnly: c.httpOnly || isSensitive,
+      // If sameSite is not specified, default to Lax for CSRF protection
+      sameSite: (c.sameSite && c.sameSite !== 'unspecified') ? c.sameSite : 'lax',
+      // If it's a session cookie (no expiration), force it to persist for 1 year
+      // This ensures sessions survive browser restarts/shutdowns.
+      expirationDate: (c.expirationDate) ? c.expirationDate : (Date.now() / 1000) + (60 * 60 * 24 * 365),
+    };
+
+
+    if (!c.hostOnly) {
+      newCookie.domain = c.domain;
+    }
+
+    // Wait for each cookie to be set safely
+    await chrome.cookies.set(newCookie).catch(err => {
+      console.warn(`Failed to set cookie ${c.name} for ${domain}:`, err);
+    });
+  }
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: 'persona-move-tab',
+    title: 'Move Tab to Workspace',
+    contexts: ['page', 'frame']
+  });
+
+  chrome.contextMenus.create({
+    id: 'persona-copy-tab',
+    title: 'Copy Tab to Workspace',
+    contexts: ['page', 'frame']
+  });
+});
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (!tab || !tab.id || !tab.url) return;
+  if (info.menuItemId !== 'persona-move-tab' && info.menuItemId !== 'persona-copy-tab') return;
+
+  const isCopy = info.menuItemId === 'persona-copy-tab';
+
+  await chrome.storage.session.set({
+    pendingTabAction: {
+      type: isCopy ? 'copy' : 'move',
+      tabId: tab.id,
+      url: tab.url,
+      title: tab.title,
+      favIconUrl: tab.favIconUrl
+    }
+  });
+
+  chrome.action.openPopup();
+});
+
+/**
+ * Restores all active sessions on browser startup.
+ */
+chrome.runtime.onStartup.addListener(async () => {
+  console.log("Browser startup detected. Restoring active Persona sessions...");
+  try {
+    const data = await chrome.storage.local.get(["globalAccounts", "activeSessions"]);
+    const accounts = data.globalAccounts || [];
+    const activeSessions = data.activeSessions || {};
+
+    for (const [domain, accountId] of Object.entries(activeSessions)) {
+      const activeAccount = accounts.find(acc => acc.id === accountId);
+      if (activeAccount && activeAccount.cookies) {
+        console.log(`Restoring session for ${domain} (${activeAccount.email})...`);
+        await injectCookies(activeAccount.cookies, domain);
+      }
+    }
+  } catch (error) {
+    console.error("Failed to restore sessions on startup:", error);
+  }
+});
+
+
+// Listen for messages from Popup
+// Consolidated into one listener at bottom of file...
+
+async function handleClearCookies(domain, sendResponse) {
+  try {
+    const cookies = await chrome.cookies.getAll({ domain: domain });
+    const removalPromises = cookies.map(c => {
+      const protocol = c.secure ? "https:" : "http:";
+      const cleanDomain = c.domain.startsWith('.') ? c.domain.substring(1) : c.domain;
+      const url = `${protocol}//${cleanDomain}${c.path}`;
+      return chrome.cookies.remove({ url, name: c.name, storeId: c.storeId });
+    });
+    await Promise.all(removalPromises);
+    
+    // Reload tabs for this domain
+    const tabs = await chrome.tabs.query({ url: `*://*.${domain}/*` });
+    tabs.forEach(tab => chrome.tabs.reload(tab.id));
+    
+    sendResponse({ success: true });
+  } catch (error) {
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Captures cookies for the current domain and stores them in a GLOBAL list.
+ */
+async function handleSaveSession(payload, sendResponse) {
+  const { name, domain, avatar, email, authuser } = payload;
+  
+  try {
+    const cookies = await chrome.cookies.getAll({ domain: domain });
+    const accountId = crypto.randomUUID();
+    const accountData = {
+      id: accountId,
+      name: name,
+      domain: domain,
+      avatar: avatar || null,
+      email: email || null,
+      authuser: authuser || null,
+      timestamp: Date.now(),
+      cookies: cookies
+    };
+
+    // Store in globalAccounts list
+    const data = await chrome.storage.local.get(["globalAccounts", "activeSessions"]);
+    const accounts = data.globalAccounts || [];
+    
+    // Update if email exists, otherwise add new
+    const existingIdx = accounts.findIndex(acc => acc.email === email && email !== null);
+    if (existingIdx !== -1) {
+      accounts[existingIdx] = accountData;
+    } else {
+      accounts.push(accountData);
+    }
+    
+    const activeSessions = data.activeSessions || {};
+    activeSessions[domain] = accountId;
+
+    await chrome.storage.local.set({ globalAccounts: accounts, activeSessions });
+    console.log("Account saved:", accountData); // ADDED
+    sendResponse({ success: true, account: accountData });
+    
+  } catch (error) {
+    console.error("Save failed:", error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+async function handleGetAccounts(payload, sendResponse) {
+  try {
+    // Return ALL accounts regardless of domain for Consistency
+    const data = await chrome.storage.local.get(["globalAccounts", "activeSessions"]);
+    const accounts = data.globalAccounts || [];
+    const activeSessions = data.activeSessions || {};
+
+    console.log("Accounts retrieved:", accounts); // ADDED
+    sendResponse({ 
+      success: true, 
+      accounts: accounts.map(({ cookies, ...rest }) => rest),
+      activeSessions: activeSessions // Send all active sessions to popup
+    });
+  } catch (error) {
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+async function handleRemoveAccount(payload, sendResponse) {
+  const { accountId } = payload;
+  try {
+    const data = await chrome.storage.local.get(["globalAccounts", "activeSessions"]);
+    let accounts = data.globalAccounts || [];
+    
+    accounts = accounts.filter(acc => acc.id !== accountId);
+    
+    // Also clean up activeSessions if this account was active
+    const activeSessions = data.activeSessions || {};
+    for (const [domain, id] of Object.entries(activeSessions)) {
+      if (id === accountId) {
+        delete activeSessions[domain];
+      }
+    }
+
+    await chrome.storage.local.set({ globalAccounts: accounts, activeSessions });
+    sendResponse({ success: true });
+  } catch (error) {
+    console.error("Remove failed:", error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Switch session using the domain associated with the saved account.
+ */
+async function handleSwitchSession(payload, sendResponse) {
+  const { accountId } = payload;
+
+  try {
+    const data = await chrome.storage.local.get("globalAccounts");
+    const accounts = data.globalAccounts || [];
+    const targetAccount = accounts.find(acc => acc.id === accountId);
+
+    if (!targetAccount) {
+      throw new Error("Account not found");
+    }
+
+    const domain = targetAccount.domain;
+
+    if (domain.startsWith('google.') || domain === 'gmail.com' || domain === 'youtube.com') {
+      let targetUrl = `https://www.${domain}`;
+      if (targetAccount.authuser !== null && targetAccount.authuser !== undefined) {
+        targetUrl = `https://www.google.com/webhp?authuser=${targetAccount.authuser}`;
+      } else if (targetAccount.email) {
+        targetUrl = `https://accounts.google.com/AccountChooser?Email=${encodeURIComponent(targetAccount.email)}&continue=${encodeURIComponent('https://www.google.com')}`;
+      } else {
+        targetUrl = `https://accounts.google.com`;
+      }
+      chrome.windows.create({ url: targetUrl, focused: true });
+      
+      const finalStorage = await chrome.storage.local.get("activeSessions");
+      const finalActiveSessions = finalStorage.activeSessions || {};
+      finalActiveSessions[domain] = accountId;
+      await chrome.storage.local.set({ activeSessions: finalActiveSessions });
+      
+      sendResponse({ success: true });
+      return;
+    }
+
+    // 1. Inject SAVED cookies (Merging) using the hardened helper
+    await injectCookies(targetAccount.cookies, domain);
+
+    // 2. Propagation Delay: Wait for cookies to "settle" in the browser state
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+
+    // 4. Reload active tabs for that domain and open a new window
+    const tabs = await chrome.tabs.query({ url: `*://*.${domain}/*` });
+    tabs.forEach(tab => chrome.tabs.reload(tab.id));
+
+    chrome.windows.create({
+      url: `https://www.${domain}`,
+      focused: true
+    });
+
+    // 5. Update active state
+    // Re-fetch in case it changed
+    const finalStorage = await chrome.storage.local.get("activeSessions");
+    const finalActiveSessions = finalStorage.activeSessions || {};
+    finalActiveSessions[domain] = accountId;
+    await chrome.storage.local.set({ activeSessions: finalActiveSessions });
+
+    sendResponse({ success: true });
+
+  } catch (error) {
+    console.error("Switch failed:", error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+// ============================================================================
+// PROFILE WORKSPACE SYSTEM
+// ============================================================================
+
+/**
+ * Generate a unique ID for profiles
+ */
+function generateProfileId() {
+  return 'profile_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+/**
+ * Get all profiles from storage
+ */
+async function getProfiles() {
+  const data = await chrome.storage.local.get(['profiles']);
+  return data.profiles || [];
+}
+
+/**
+ * Save profiles to storage
+ */
+async function saveProfiles(profiles) {
+  await chrome.storage.local.set({ profiles });
+}
+
+/**
+ * Create a new profile with current tabs
+ */
+async function handleCreateProfile(payload, sendResponse) {
+  try {
+    const { name, accountId, tabs, subGroups, snapshotWindowId } = payload;
+    
+    if (!name || !accountId) {
+      throw new Error('Profile name and account ID are required');
+    }
+
+    const profiles = await getProfiles();
+    
+    // Check if profile name already exists
+    if (profiles.some(p => p.name.toLowerCase() === name.toLowerCase())) {
+      throw new Error('A profile with this name already exists');
+    }
+
+    let finalTabs = tabs || [];
+    let finalSubGroups = subGroups || [];
+
+    if (snapshotWindowId) {
+      const extracted = await extractProfileTabsData(snapshotWindowId);
+      finalTabs = extracted.ungroupedTabs;
+      finalSubGroups = extracted.subGroups;
+    }
+
+    const profile = {
+      id: generateProfileId(),
+      name: name,
+      accountId: accountId,
+      tabs: finalTabs,
+      subGroups: finalSubGroups,
+      createdAt: Date.now(),
+      lastOpened: null,
+      windowId: null,
+      isHibernated: true
+    };
+
+    profiles.push(profile);
+    await saveProfiles(profiles);
+
+    console.log('Profile created:', profile);
+    sendResponse({ success: true, profile });
+  } catch (error) {
+    console.error('Create profile failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Handle tab move/copy action
+ */
+async function handleExecuteTabAction(payload, sendResponse) {
+  try {
+    const { actionType, tabData, workspaceId, subGroupId } = payload;
+    const profiles = await getProfiles();
+    const profile = profiles.find(p => p.id === workspaceId);
+    if (!profile) throw new Error('Workspace not found');
+
+    if (subGroupId) {
+      const g = profile.subGroups.find(sg => sg.id === subGroupId);
+      if (g) g.tabs.push(tabData);
+      else throw new Error('Subgroup not found');
+    } else {
+      profile.tabs.push(tabData);
+    }
+    
+    await saveProfiles(profiles);
+
+    if (actionType === 'move' && tabData.tabId) {
+      chrome.tabs.remove(tabData.tabId).catch(console.error);
+    }
+    
+    await chrome.storage.session.remove('pendingTabAction');
+    
+    // If the workspace window is currently open, we should physically open the tab there!
+    if (profile.windowId) {
+      chrome.tabs.create({
+        windowId: profile.windowId,
+        url: tabData.url,
+        active: false
+      }).then(createdTab => {
+        if (subGroupId) {
+            const g = profile.subGroups.find(sg => sg.id === subGroupId);
+            if (g && g.chromeGroupId) {
+              chrome.tabs.group({ tabIds: [createdTab.id], groupId: g.chromeGroupId }).catch(console.error);
+            }
+        }
+      }).catch(console.error);
+    }
+
+    sendResponse({ success: true });
+  } catch (err) {
+    console.error('Execute Tab Action failed:', err);
+    sendResponse({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Handle Tab Group Imports
+ */
+async function handleImportTabGroups(payload, sendResponse) {
+  try {
+    const { mode, workspaceName, accountId, targetWorkspaceId, groupsToImport } = payload;
+    const profiles = await getProfiles();
+    
+    const mappedSubGroups = groupsToImport.map(g => ({
+      id: crypto.randomUUID(),
+      name: g.title || g.color,
+      color: g.color || 'grey',
+      collapsed: g.collapsed || false,
+      tabs: g.tabs || [],
+      chromeGroupId: null
+    }));
+
+    if (mode === 'create') {
+      const profile = {
+        id: generateProfileId(),
+        name: workspaceName,
+        accountId: accountId,
+        tabs: [], 
+        subGroups: mappedSubGroups,
+        createdAt: Date.now(),
+        lastOpened: null,
+        windowId: null,
+        isHibernated: true
+      };
+      profiles.push(profile);
+    } else if (mode === 'add') {
+      const profile = profiles.find(p => p.id === targetWorkspaceId);
+      if (!profile) throw new Error('Target Workspace not found');
+      profile.subGroups = [...(profile.subGroups || []), ...mappedSubGroups];
+    } else {
+      throw new Error('Invalid import mode');
+    }
+
+    await saveProfiles(profiles);
+    sendResponse({ success: true });
+  } catch (err) {
+    console.error('Import Tab Groups failed:', err);
+    sendResponse({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Get all profiles
+ */
+async function handleGetProfiles(payload, sendResponse) {
+  try {
+    const profiles = await getProfiles();
+    sendResponse({ success: true, profiles });
+  } catch (error) {
+    console.error('Get profiles failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Open a profile in a new window
+ */
+async function handleOpenProfile(payload, sendResponse) {
+  try {
+    const { profileId } = payload;
+    const profiles = await getProfiles();
+    const profile = profiles.find(p => p.id === profileId);
+
+    if (!profile) {
+      throw new Error('Profile not found');
+    }
+
+    // Check if profile window is already open
+    if (profile.windowId) {
+      try {
+        const existingWindow = await chrome.windows.get(profile.windowId);
+        if (existingWindow) {
+          // Focus existing window
+          await chrome.windows.update(profile.windowId, { focused: true });
+          sendResponse({ success: true, windowId: profile.windowId, reused: true });
+          return;
+        }
+      } catch (e) {
+        // Window doesn't exist anymore, clear it
+        profile.windowId = null;
+      }
+    }
+
+    // Get account data for session restoration
+    const data = await chrome.storage.local.get(['globalAccounts']);
+    const accounts = data.globalAccounts || [];
+    const account = accounts.find(acc => acc.id === profile.accountId);
+
+    // Determine URLs for initial window creation
+    const hasUngrouped = profile.tabs && profile.tabs.length > 0;
+    const hasSubGroups = profile.subGroups && profile.subGroups.length > 0;
+    
+    let initialUrls = ['chrome://newtab'];
+    if (hasUngrouped) {
+      initialUrls = profile.tabs.map(tab => tab.url);
+    } else if (!hasSubGroups) {
+      initialUrls = ['chrome://newtab'];
+    }
+
+    const newWindow = await chrome.windows.create({
+      url: initialUrls,
+      focused: true
+    });
+
+    // Restore subgroups
+    if (hasSubGroups) {
+      for (const subGroup of profile.subGroups) {
+        if (!subGroup.tabs || subGroup.tabs.length === 0) continue;
+        
+        const tabIds = [];
+        for (const tab of subGroup.tabs) {
+          const createdTab = await chrome.tabs.create({
+            windowId: newWindow.id,
+            url: tab.url,
+            active: false
+          });
+          tabIds.push(createdTab.id);
+        }
+        
+        if (tabIds.length > 0) {
+          const groupId = await chrome.tabs.group({
+            tabIds: tabIds,
+            createProperties: { windowId: newWindow.id }
+          });
+          
+          await chrome.tabGroups.update(groupId, {
+            title: subGroup.name,
+            color: subGroup.color,
+            collapsed: subGroup.collapsed || false
+          });
+          
+          subGroup.chromeGroupId = groupId;
+        }
+      }
+      
+      // If we used the fallback 'chrome://newtab', we can remove it now
+      if (!hasUngrouped) {
+        const tabsInWindow = await chrome.tabs.query({ windowId: newWindow.id });
+        const newTab = tabsInWindow.find(t => t.url === 'chrome://newtab/' || t.pendingUrl === 'chrome://newtab/');
+        if (newTab && tabsInWindow.length > 1) {
+          await chrome.tabs.remove(newTab.id).catch(e => console.log('Silently ignoring newtab removal error', e));
+        }
+      }
+    }
+
+    // Update profile with window ID and last opened time
+    profile.windowId = newWindow.id;
+    profile.lastOpened = Date.now();
+    profile.isHibernated = false;
+    await saveProfiles(profiles);
+
+    // Restore account session if available
+    if (account && account.cookies) {
+      await injectCookies(account.cookies, account.domain);
+    }
+
+    console.log('Profile opened:', profile.name, 'Window ID:', newWindow.id);
+    sendResponse({ success: true, windowId: newWindow.id });
+  } catch (error) {
+    console.error('Open profile failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Helper to extract tabs and subgroups from a window
+ */
+async function extractProfileTabsData(windowId) {
+  const tabs = await chrome.tabs.query({ windowId: windowId });
+  const chromeGroups = await chrome.tabGroups.query({ windowId: windowId }).catch(() => []);
+  
+  const ungroupedTabs = [];
+  const groupMap = {};
+
+  for (const g of chromeGroups) {
+    groupMap[g.id] = {
+      id: crypto.randomUUID(),
+      name: g.title || '',
+      color: g.color || 'grey',
+      collapsed: g.collapsed || false,
+      tabs: [],
+      chromeGroupId: g.id 
+    };
+  }
+
+  for (const tab of tabs) {
+    if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) continue;
+    
+    const tabObj = {
+      url: tab.url,
+      title: tab.title || 'Untitled',
+      favIconUrl: tab.favIconUrl || null
+    };
+
+    if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE && groupMap[tab.groupId]) {
+      groupMap[tab.groupId].tabs.push(tabObj);
+    } else {
+      ungroupedTabs.push(tabObj);
+    }
+  }
+
+  const subGroups = [];
+  for (const g of Object.values(groupMap)) {
+    if (g.tabs.length > 0) {
+      subGroups.push(g);
+    }
+  }
+
+  return { ungroupedTabs, subGroups };
+}
+
+/**
+ * Save current window tabs to a profile
+ */
+async function handleSaveTabsToProfile(payload, sendResponse) {
+  try {
+    const { profileId, windowId } = payload;
+    const profiles = await getProfiles();
+    const profileIndex = profiles.findIndex(p => p.id === profileId);
+
+    if (profileIndex === -1) {
+      throw new Error('Profile not found');
+    }
+
+    const { ungroupedTabs, subGroups } = await extractProfileTabsData(windowId);
+
+    profiles[profileIndex].tabs = ungroupedTabs;
+    profiles[profileIndex].subGroups = subGroups;
+    await saveProfiles(profiles);
+
+    const totalTabs = ungroupedTabs.length + subGroups.reduce((acc, g) => acc + g.tabs.length, 0);
+    console.log('Tabs saved to profile:', profiles[profileIndex].name, 'Tab count:', totalTabs);
+    sendResponse({ success: true, tabs: ungroupedTabs }); // Popup uses this to simply check success
+  } catch (error) {
+    console.error('Save tabs failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Add a tab to a profile
+ */
+async function handleAddTabToProfile(payload, sendResponse) {
+  try {
+    const { profileId, url, title, favIconUrl } = payload;
+    const profiles = await getProfiles();
+    const profileIndex = profiles.findIndex(p => p.id === profileId);
+
+    if (profileIndex === -1) {
+      throw new Error('Profile not found');
+    }
+
+    // Check if tab already exists
+    if (profiles[profileIndex].tabs.some(tab => tab.url === url)) {
+      throw new Error('Tab already exists in this profile');
+    }
+
+    profiles[profileIndex].tabs.push({
+      url: url,
+      title: title || 'Untitled',
+      favIconUrl: favIconUrl || null
+    });
+
+    await saveProfiles(profiles);
+
+    console.log('Tab added to profile:', profiles[profileIndex].name);
+    sendResponse({ success: true, tabs: profiles[profileIndex].tabs });
+  } catch (error) {
+    console.error('Add tab failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Remove a tab from a profile
+ */
+async function handleRemoveTabFromProfile(payload, sendResponse) {
+  try {
+    const { profileId, tabIndex } = payload;
+    const profiles = await getProfiles();
+    const profileIndex = profiles.findIndex(p => p.id === profileId);
+
+    if (profileIndex === -1) {
+      throw new Error('Profile not found');
+    }
+
+    if (tabIndex < 0 || tabIndex >= profiles[profileIndex].tabs.length) {
+      throw new Error('Invalid tab index');
+    }
+
+    profiles[profileIndex].tabs.splice(tabIndex, 1);
+    await saveProfiles(profiles);
+
+    console.log('Tab removed from profile:', profiles[profileIndex].name);
+    sendResponse({ success: true, tabs: profiles[profileIndex].tabs });
+  } catch (error) {
+    console.error('Remove tab failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Delete a profile
+ */
+async function handleDeleteProfile(payload, sendResponse) {
+  try {
+    const { profileId } = payload;
+    const profiles = await getProfiles();
+    const profileIndex = profiles.findIndex(p => p.id === profileId);
+
+    if (profileIndex === -1) {
+      throw new Error('Profile not found');
+    }
+
+    const profile = profiles[profileIndex];
+
+    // Close the profile window if it's open
+    if (profile.windowId) {
+      try {
+        await chrome.windows.remove(profile.windowId);
+      } catch (e) {
+        // Window might already be closed
+        console.log('Window already closed or not found');
+      }
+    }
+
+    profiles.splice(profileIndex, 1);
+    await saveProfiles(profiles);
+
+    console.log('Profile deleted:', profile.name);
+    sendResponse({ success: true });
+  } catch (error) {
+    console.error('Delete profile failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Rename a profile
+ */
+async function handleRenameProfile(payload, sendResponse) {
+  try {
+    const { profileId, newName } = payload;
+    const profiles = await getProfiles();
+    const profileIndex = profiles.findIndex(p => p.id === profileId);
+
+    if (profileIndex === -1) {
+      throw new Error('Profile not found');
+    }
+
+    // Check if name already exists
+    if (profiles.some((p, idx) => idx !== profileIndex && p.name.toLowerCase() === newName.toLowerCase())) {
+      throw new Error('A profile with this name already exists');
+    }
+
+    profiles[profileIndex].name = newName;
+    await saveProfiles(profiles);
+
+    console.log('Profile renamed:', newName);
+    sendResponse({ success: true, profile: profiles[profileIndex] });
+  } catch (error) {
+    console.error('Rename profile failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Hibernate a profile (close window, save state)
+ */
+async function handleHibernateProfile(payload, sendResponse) {
+  try {
+    const { profileId } = payload;
+    const profiles = await getProfiles();
+    const profileIndex = profiles.findIndex(p => p.id === profileId);
+
+    if (profileIndex === -1) {
+      throw new Error('Profile not found');
+    }
+
+    const profile = profiles[profileIndex];
+
+    if (profile.windowId) {
+      try {
+        // Save tabs before closing
+        const { ungroupedTabs, subGroups } = await extractProfileTabsData(profile.windowId);
+        profiles[profileIndex].tabs = ungroupedTabs;
+        profiles[profileIndex].subGroups = subGroups;
+        
+        // Close the window
+        await chrome.windows.remove(profile.windowId);
+        profiles[profileIndex].windowId = null;
+        profiles[profileIndex].isHibernated = true;
+        profiles[profileIndex].lastOpened = Date.now();
+
+        await saveProfiles(profiles);
+
+        console.log('Profile hibernated:', profile.name);
+        sendResponse({ success: true });
+      } catch (e) {
+        // Window might already be closed
+        profiles[profileIndex].windowId = null;
+        profiles[profileIndex].isHibernated = true;
+        await saveProfiles(profiles);
+        sendResponse({ success: true });
+      }
+    } else {
+      sendResponse({ success: true, message: 'Profile already hibernated' });
+    }
+  } catch (error) {
+    console.error('Hibernate profile failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Update profile account association
+ */
+async function handleUpdateProfileAccount(payload, sendResponse) {
+  try {
+    const { profileId, accountId } = payload;
+    const profiles = await getProfiles();
+    const profileIndex = profiles.findIndex(p => p.id === profileId);
+
+    if (profileIndex === -1) {
+      throw new Error('Profile not found');
+    }
+
+    profiles[profileIndex].accountId = accountId;
+    await saveProfiles(profiles);
+
+    console.log('Profile account updated:', profiles[profileIndex].name);
+    sendResponse({ success: true, profile: profiles[profileIndex] });
+  } catch (error) {
+    console.error('Update profile account failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+// Listen for window close events to auto-hibernate profiles
+chrome.windows.onRemoved.addListener(async (windowId) => {
+  try {
+    const profiles = await getProfiles();
+    const profileIndex = profiles.findIndex(p => p.windowId === windowId);
+
+    if (profileIndex !== -1) {
+      profiles[profileIndex].windowId = null;
+      profiles[profileIndex].isHibernated = true;
+      profiles[profileIndex].lastOpened = Date.now();
+      await saveProfiles(profiles);
+      console.log('Profile auto-hibernated:', profiles[profileIndex].name);
+    }
+  } catch (error) {
+    console.error('Auto-hibernate failed:', error);
+  }
+});
+
+// Listen for keyboard shortcuts
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command === 'hibernate-active-profile') {
+    try {
+      const currentWindow = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
+      if (!currentWindow || currentWindow.id === chrome.windows.WINDOW_ID_NONE) return;
+
+      const profiles = await getProfiles();
+      const activeProfile = profiles.find(p => p.windowId === currentWindow.id);
+
+      if (activeProfile) {
+        await handleHibernateProfile({ profileId: activeProfile.id }, (response) => {});
+      }
+    } catch (error) {
+      console.error('Error during hibernate shortcut execution:', error);
+    }
+  } else if (command === 'open-workspace-switcher') {
+    openCenteredPopup('switcher.html', 650, 480);
+  } else if (command === 'open-command-palette') {
+    openCenteredPopup('palette.html', 650, 520);
+  } else if (command === 'default-workspace' || command === 'open-profile-1') {
+    console.log('Shortcut received:', command);
+    const profiles = await getProfiles();
+    
+    // Try marked default first
+    let profileToOpen = profiles.find(p => p.isDefault);
+    
+    // Fallback: if no default, open first profile (Legacy Behavior)
+    if (!profileToOpen && profiles.length > 0) {
+      console.log('No default set, falling back to first profile');
+      profileToOpen = profiles[0];
+    }
+
+    if (profileToOpen) {
+      console.log('Opening workspace:', profileToOpen.name);
+      await handleOpenProfile({ profileId: profileToOpen.id }, (response) => {
+        console.log('Open success:', response.success);
+      });
+    } else {
+      console.log('No workspaces available to open.');
+    }
+  }
+});
+
+/**
+ * Helper to open a centered popup window
+ */
+function openCenteredPopup(url, width, height) {
+  // We can't easily get screen metrics in SW without manifest permissions, 
+  // so we'll use reasonable defaults or try to get current window metrics.
+  chrome.windows.getLastFocused((win) => {
+    let left = 100;
+    let top = 100;
+    
+    if (win) {
+      left = Math.round(win.left + (win.width - width) / 2);
+      top = Math.round(win.top + (win.height - height) / 2);
+    }
+
+    chrome.windows.create({
+      url: url,
+      type: 'popup',
+      width: width,
+      height: height,
+      left: left,
+      top: top,
+      focused: true
+    });
+  });
+}
+
+// Add profile-related message handlers to existing listener
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  // Existing handlers...
+  if (request.action === "SAVE_SESSION") {
+    handleSaveSession(request.payload, sendResponse);
+    return true;
+  }
+  
+  if (request.action === "SWITCH_SESSION") {
+    handleSwitchSession(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "GET_ACCOUNTS") {
+    handleGetAccounts(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "REMOVE_ACCOUNT") {
+    handleRemoveAccount(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "GET_CURRENT_TAB") {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]) {
+        const domain = getDomainFromUrl(tabs[0].url);
+        sendResponse({ tab: tabs[0], domain: domain, title: tabs[0].title });
+      } else {
+        sendResponse({ error: "No active tab" });
+      }
+    });
+    return true;
+  }
+
+  if (request.action === "CLEAR_DOMAIN_COOKIES") {
+    handleClearCookies(request.payload.domain, sendResponse);
+    return true;
+  }
+
+  // Profile-related handlers
+  if (request.action === "CREATE_PROFILE") {
+    handleCreateProfile(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "GET_PROFILES") {
+    handleGetProfiles(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "OPEN_PROFILE") {
+    handleOpenProfile(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "SAVE_TABS_TO_PROFILE") {
+    handleSaveTabsToProfile(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "ADD_TAB_TO_PROFILE") {
+    handleAddTabToProfile(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "REMOVE_TAB_FROM_PROFILE") {
+    handleRemoveTabFromProfile(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "DELETE_PROFILE") {
+    handleDeleteProfile(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "RENAME_PROFILE") {
+    handleRenameProfile(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "HIBERNATE_PROFILE") {
+    handleHibernateProfile(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "UPDATE_PROFILE_ACCOUNT") {
+    handleUpdateProfileAccount(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "TOGGLE_DEFAULT_PROFILE") {
+    handleToggleDefaultProfile(request.payload, sendResponse);
+    return true;
+  }
+
+  if (request.action === "OPEN_FOCUSED_POPUP") {
+    const url = request.payload?.mode === 'create' ? 'popup.html?mode=create' : 'popup.html';
+    openCenteredPopup(url, 400, 600);
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (request.action === "IMPORT_TAB_GROUPS") {
+    handleImportTabGroups(request.payload, sendResponse);
+    return true;
+  }
+  
+  if (request.action === "EXECUTE_TAB_ACTION") {
+    handleExecuteTabAction(request.payload, sendResponse);
+    return true;
+  }
+});
+
+/**
+ * Toggle default status for a profile
+ */
+async function handleToggleDefaultProfile(payload, sendResponse) {
+  try {
+    const { profileId } = payload;
+    const profiles = await getProfiles();
+    
+    profiles.forEach(p => {
+      if (p.id === profileId) {
+        p.isDefault = !p.isDefault;
+      } else if (p.isDefault) {
+        // Ensure only one is default
+        p.isDefault = false;
+      }
+    });
+
+    await saveProfiles(profiles);
+    sendResponse({ success: true, profiles });
+  } catch (error) {
+    console.error('Toggle default failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
