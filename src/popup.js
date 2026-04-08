@@ -58,6 +58,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (urlParams.get('mode') === 'create') {
       setTimeout(openCreateProfileView, 100);
     }
+
+    // Check for Pending Tab Action (Context Menu)
+    const sessionData = await chrome.storage.session.get('pendingTabAction');
+    if (sessionData && sessionData.pendingTabAction) {
+      setTimeout(() => openTabActionView(sessionData.pendingTabAction), 100);
+    }
+
+    // Check for Pending Import (from Command Palette)
+    const importData = await chrome.storage.session.get('pendingImport');
+    if (importData && importData.pendingImport) {
+      await chrome.storage.session.remove('pendingImport');
+      setTimeout(() => openImportGroupsView(), 100);
+    }
     
   } catch (error) {
     clearTimeout(tabDetectionTimeout);
@@ -986,7 +999,204 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-cancel-add-tab')?.addEventListener('click', closeAddTabView);
   document.getElementById('btn-save-tab')?.addEventListener('click', saveTabToProfile);
 
+  // Import / Tab actions
+  document.getElementById('btn-import-groups')?.addEventListener('click', openImportGroupsView);
+  document.getElementById('btn-cancel-import-groups')?.addEventListener('click', closeImportGroupsView);
+  document.getElementById('btn-execute-import')?.addEventListener('click', executeImportGroups);
+  document.getElementById('btn-cancel-tab-action')?.addEventListener('click', closeTabActionView);
+  document.getElementById('import-target-workspace')?.addEventListener('change', (e) => {
+    document.getElementById('import-new-workspace-name-group').style.display = e.target.value === 'create_new' ? 'block' : 'none';
+    document.getElementById('import-account-group').style.display = e.target.value === 'create_new' ? 'block' : 'none';
+  });
+
   // Render profiles on load
   renderProfiles();
 });
+
+// ==========================================
+// IMPORT TAB GROUPS
+// ==========================================
+let importableGroupsCache = [];
+
+async function openImportGroupsView() {
+  document.getElementById('main-view').classList.add('hidden');
+  document.getElementById('import-groups-view').classList.remove('hidden');
+  
+  document.getElementById('import-new-workspace-name-group').style.display = 'block';
+  document.getElementById('import-account-group').style.display = 'block';
+  document.getElementById('import-workspace-name').value = 'Imported Groups';
+  document.getElementById('btn-execute-import').textContent = 'Loading...';
+  document.getElementById('btn-execute-import').disabled = true;
+
+  // Populate Accounts
+  const accountSelect = document.getElementById('import-workspace-account');
+  const accResponse = await chrome.runtime.sendMessage({ action: "GET_ACCOUNTS" });
+  if (accResponse && accResponse.accounts) {
+    accountSelect.innerHTML = accResponse.accounts.map(acc => 
+      `<option value="${acc.id}">${acc.name} (${acc.email})</option>`
+    ).join('') + '<option value="">No Account</option>';
+  }
+
+  // Populate Workspaces Target
+  const targetSelect = document.getElementById('import-target-workspace');
+  const profResponse = await chrome.runtime.sendMessage({ action: "GET_PROFILES" });
+  let workspaces = profResponse?.profiles || [];
+  targetSelect.innerHTML = `<option value="create_new">+ Create New Workspace</option>` + 
+    workspaces.map(w => `<option value="${w.id}">${w.name}</option>`).join('');
+
+  await loadImportableGroups();
+}
+
+function closeImportGroupsView() {
+  document.getElementById('import-groups-view').classList.add('hidden');
+  document.getElementById('main-view').classList.remove('hidden');
+}
+
+async function loadImportableGroups() {
+  const currentWindow = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
+  if (!currentWindow) return;
+  
+  const groups = await chrome.tabGroups.query({ windowId: currentWindow.id });
+  importableGroupsCache = [];
+
+  for (const group of groups) {
+    const tabs = await chrome.tabs.query({ groupId: group.id, windowId: currentWindow.id });
+    importableGroupsCache.push({
+      id: group.id,
+      title: group.title || 'Unnamed Group',
+      color: group.color,
+      collapsed: group.collapsed,
+      tabs: tabs.map(t => ({ url: t.url, title: t.title, favIconUrl: t.favIconUrl }))
+    });
+  }
+
+  const listEl = document.getElementById('import-groups-list');
+  listEl.innerHTML = importableGroupsCache.length === 0 
+    ? '<div style="padding:16px;text-align:center;color:var(--text-secondary);">No Tab Groups found in this window.</div>' 
+    : importableGroupsCache.map(g => `
+      <div class="profile-item" style="cursor:default; padding: 8px;">
+        <div style="display:flex; align-items:center;">
+          <input type="checkbox" id="import_g_${g.id}" class="import-checkbox" value="${g.id}" checked>
+          <div class="subgroup-marker ${g.color}" style="margin: 0 8px;"></div>
+          <span style="flex:1;">${g.title}</span>
+          <span style="font-size:12px; color:var(--text-secondary);">${g.tabs.length} tabs</span>
+        </div>
+      </div>
+    `).join('');
+
+  document.getElementById('btn-execute-import').textContent = 'Import Selected';
+  document.getElementById('btn-execute-import').disabled = importableGroupsCache.length === 0;
+}
+
+async function executeImportGroups() {
+  const checkboxes = document.querySelectorAll('.import-checkbox:checked');
+  if (checkboxes.length === 0) return alert('Select at least one group');
+  
+  const selectedIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
+  const groupsToImport = importableGroupsCache.filter(g => selectedIds.includes(g.id));
+
+  const targetId = document.getElementById('import-target-workspace').value;
+  const isCreate = targetId === 'create_new';
+  
+  const payload = {
+    groupsToImport,
+    mode: isCreate ? 'create' : 'add',
+    targetWorkspaceId: isCreate ? null : targetId,
+    workspaceName: isCreate ? document.getElementById('import-workspace-name').value : null,
+    accountId: isCreate ? document.getElementById('import-workspace-account').value : null,
+  };
+
+  document.getElementById('btn-execute-import').textContent = 'Saving...';
+  
+  const response = await chrome.runtime.sendMessage({ action: "IMPORT_TAB_GROUPS", payload });
+  if (response && response.success) {
+    closeImportGroupsView();
+    await renderProfiles();
+  } else {
+    alert('Import failed: ' + (response?.error || 'Unknown error'));
+    document.getElementById('btn-execute-import').textContent = 'Import Selected';
+  }
+}
+
+// ==========================================
+// CONTEXT MENU TAB ACTIONS (MOVE/COPY)
+// ==========================================
+let pendingTabActionCache = null;
+
+async function openTabActionView(action) {
+  pendingTabActionCache = action;
+  document.getElementById('main-view').classList.add('hidden');
+  document.getElementById('tab-action-view').classList.remove('hidden');
+  document.getElementById('tab-action-title').textContent = action.type === 'move' ? 'Move Tab' : 'Copy Tab';
+  document.getElementById('tab-action-desc').textContent = `Target for: ${action.title.substring(0, 50)}...`;
+
+  const targetsEl = document.getElementById('tab-action-targets');
+  targetsEl.innerHTML = '<div style="padding:16px;text-align:center;">Loading workspaces...</div>';
+
+  const profResponse = await chrome.runtime.sendMessage({ action: "GET_PROFILES" });
+  const workspaces = profResponse?.profiles || [];
+  
+  if (workspaces.length === 0) {
+    targetsEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-secondary);">No Workspaces exist.</div>';
+    return;
+  }
+
+  targetsEl.innerHTML = workspaces.map(w => {
+    let subGroupHtml = '';
+    if (w.subGroups && w.subGroups.length > 0) {
+      subGroupHtml = w.subGroups.map(sg => `
+        <div class="profile-item target-subgroup" style="padding-left: 32px;" data-wid="${w.id}" data-sgid="${sg.id}">
+          <div class="subgroup-marker ${sg.color}"></div>
+          <div class="profile-info">
+            <div class="profile-name" style="font-size: 13px;">${sg.name}</div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    return `
+      <div class="profile-item target-workspace" data-wid="${w.id}">
+        <div class="profile-avatar">${w.name.charAt(0)}</div>
+        <div class="profile-info">
+          <div class="profile-name">${w.name}</div>
+        </div>
+      </div>
+      ${subGroupHtml}
+    `;
+  }).join('');
+
+  // Bind clicks
+  document.querySelectorAll('.target-workspace, .target-subgroup').forEach(el => {
+    el.addEventListener('click', () => {
+      executeTabAction(el.dataset.wid, el.dataset.sgid);
+    });
+  });
+}
+
+async function closeTabActionView() {
+  document.getElementById('tab-action-view').classList.add('hidden');
+  document.getElementById('main-view').classList.remove('hidden');
+  await chrome.storage.session.remove('pendingTabAction');
+}
+
+async function executeTabAction(workspaceId, subGroupId) {
+  const payload = {
+    actionType: pendingTabActionCache.type,
+    tabData: {
+      url: pendingTabActionCache.url,
+      title: pendingTabActionCache.title,
+      favIconUrl: pendingTabActionCache.favIconUrl,
+      tabId: pendingTabActionCache.tabId // Included for 'move' closing
+    },
+    workspaceId,
+    subGroupId
+  };
+
+  const response = await chrome.runtime.sendMessage({ action: "EXECUTE_TAB_ACTION", payload });
+  if (response && response.success) {
+    window.close();
+  } else {
+    alert('Failed to execute action: ' + (response?.error || 'Unknown error'));
+  }
+}
 

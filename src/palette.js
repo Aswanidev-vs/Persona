@@ -3,10 +3,12 @@
 let allItems = [];
 let filteredItems = [];
 let selectedIndex = 0;
+let activeTabCache = null; // stores the real browser tab info
 
 const COMMANDS = [
   { id: 'add-account', title: 'Add Account', subtitle: 'Connect a new Google account', icon: '👤', section: 'Actions' },
   { id: 'create-workspace', title: 'Create Workspace', subtitle: 'New profile from current tabs', icon: '📂', section: 'Actions' },
+  { id: 'import-groups', title: 'Import Tab Groups', subtitle: 'Import native Chrome Tab Groups as a Workspace', icon: '📥', section: 'Actions' },
   { id: 'sign-out-all', title: 'Sign Out All', subtitle: 'Remove all sessions from extension', icon: '🚪', section: 'Danger Zone' },
   { id: 'go-home', title: 'Dashboard', subtitle: 'Open main extension view', icon: '🏠', section: 'System' },
 ];
@@ -45,11 +47,50 @@ async function loadItems() {
   // Load Actions
   allItems = [...COMMANDS];
 
-  // Load Recent Tabs from Profiles
+  // Capture the REAL active browser tab (not this palette window)
+  try {
+    const lastWin = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
+    if (lastWin) {
+      const tabs = await chrome.tabs.query({ active: true, windowId: lastWin.id });
+      if (tabs[0] && tabs[0].url && !tabs[0].url.startsWith('chrome')) {
+        activeTabCache = tabs[0];
+      }
+    }
+  } catch (err) {
+    console.error('Failed to detect active tab:', err);
+  }
+
+  // Load Recent Tabs from Profiles & generate Move/Copy commands
   try {
     const response = await chrome.runtime.sendMessage({ action: "GET_PROFILES" });
     if (response && response.success) {
       const profiles = response.profiles;
+
+      // Generate Move/Copy commands for each workspace
+      if (activeTabCache) {
+        profiles.forEach(p => {
+          allItems.push({
+            id: `move-to-${p.id}`,
+            title: `Move Active Tab → ${p.name}`,
+            subtitle: activeTabCache.title?.substring(0, 60) || activeTabCache.url,
+            icon: '➡️',
+            section: 'Quick Actions',
+            workspaceId: p.id,
+            actionType: 'move'
+          });
+          allItems.push({
+            id: `copy-to-${p.id}`,
+            title: `Copy Active Tab → ${p.name}`,
+            subtitle: activeTabCache.title?.substring(0, 60) || activeTabCache.url,
+            icon: '📋',
+            section: 'Quick Actions',
+            workspaceId: p.id,
+            actionType: 'copy'
+          });
+        });
+      }
+
+      // Load Recent Tabs
       profiles.forEach(p => {
         p.tabs.forEach(tab => {
           allItems.push({
@@ -138,6 +179,31 @@ function renderList() {
 }
 
 async function executeItem(item) {
+  // Move / Copy active tab to workspace
+  if (item.id.startsWith('move-to-') || item.id.startsWith('copy-to-')) {
+    if (!activeTabCache) {
+      alert('No active browser tab detected.');
+      return;
+    }
+    const payload = {
+      actionType: item.actionType,
+      tabData: {
+        url: activeTabCache.url,
+        title: activeTabCache.title,
+        favIconUrl: activeTabCache.favIconUrl,
+        tabId: activeTabCache.id
+      },
+      workspaceId: item.workspaceId
+    };
+    const resp = await chrome.runtime.sendMessage({ action: "EXECUTE_TAB_ACTION", payload });
+    if (resp && resp.success) {
+      window.close();
+    } else {
+      alert('Failed: ' + (resp?.error || 'Unknown error'));
+    }
+    return;
+  }
+
   if (item.id.startsWith('tab-')) {
     chrome.tabs.create({ url: item.url });
     window.close();
@@ -145,11 +211,19 @@ async function executeItem(item) {
     chrome.tabs.create({ url: 'https://accounts.google.com/AddSession' });
     window.close();
   } else if (item.id === 'create-workspace') {
-    // Try standard popup first, fallback to focused window
     try {
       await chrome.action.openPopup();
     } catch (e) {
       await chrome.runtime.sendMessage({ action: "OPEN_FOCUSED_POPUP", payload: { mode: "create" } });
+    }
+    window.close();
+  } else if (item.id === 'import-groups') {
+    // Open popup in import mode - store a flag
+    await chrome.storage.session.set({ pendingImport: true });
+    try {
+      await chrome.action.openPopup();
+    } catch (e) {
+      await chrome.runtime.sendMessage({ action: "OPEN_FOCUSED_POPUP" });
     }
     window.close();
   } else if (item.id === 'sign-out-all') {

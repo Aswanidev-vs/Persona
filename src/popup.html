@@ -39,9 +39,14 @@
         <section class="profiles-card">
           <div class="section-header">
             <span class="section-title">Workspaces</span>
-            <button id="btn-create-profile" class="icon-btn" title="Create Profile">
-              <svg width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-            </button>
+            <div style="display: flex;">
+              <button id="btn-import-groups" class="icon-btn" title="Import Tab Groups">
+                <svg width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+              </button>
+              <button id="btn-create-profile" class="icon-btn" style="margin-left:4px;" title="Create Profile">
+                <svg width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+              </button>
+            </div>
           </div>
           <div id="profile-list" class="profile-list">
             <!-- Injected via JS -->
@@ -194,6 +199,62 @@
         </div>
 
         <button id="btn-save-tab" class="btn primary full-width">Add Tab</button>
+      </div>
+    </div>
+
+    <!-- Import Groups View -->
+    <div id="import-groups-view" class="view-content hidden">
+      <div class="add-header">
+        <button id="btn-cancel-import-groups" class="icon-btn" title="Back">
+          <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+        </button>
+        <span class="view-title">Import Tab Groups</span>
+      </div>
+      <div class="form-body">
+        <div id="import-groups-list" class="profile-list" style="margin-bottom: 12px; max-height: 250px;">
+          <!-- Injected via JS -->
+        </div>
+
+        <div class="form-group">
+          <label>Target Workspace</label>
+          <select id="import-target-workspace" class="account-select">
+            <option value="create_new">+ Create New Workspace</option>
+            <!-- Injected via JS -->
+          </select>
+        </div>
+
+        <div class="form-group" id="import-new-workspace-name-group">
+          <label>New Workspace Name</label>
+          <input type="text" id="import-workspace-name" placeholder="Workspace Name">
+        </div>
+
+        <div class="form-group" id="import-account-group">
+          <label>Associated Account</label>
+          <select id="import-workspace-account" class="account-select">
+            <!-- Injected via JS -->
+          </select>
+        </div>
+
+        <button id="btn-execute-import" class="btn primary full-width">Import Groups</button>
+      </div>
+    </div>
+
+    <!-- Tab Action View (Context Menu) -->
+    <div id="tab-action-view" class="view-content hidden">
+      <div class="add-header">
+        <button id="btn-cancel-tab-action" class="icon-btn" title="Cancel">
+          <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+        </button>
+        <span class="view-title" id="tab-action-title">Move Tab</span>
+      </div>
+      <div class="form-body">
+        <div class="helper-text" id="tab-action-desc" style="text-align:left; font-size:14px; font-weight:600; color:var(--text-primary); margin-bottom: 8px;">Select destination:</div>
+        
+        <div class="profiles-card">
+          <div id="tab-action-targets" class="profile-list" style="max-height: 350px;">
+            <!-- Injected via JS -->
+          </div>
+        </div>
       </div>
     </div>
 

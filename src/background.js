@@ -76,6 +76,39 @@ async function injectCookies(cookies, domain) {
   }
 }
 
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: 'persona-move-tab',
+    title: 'Move Tab to Workspace',
+    contexts: ['page', 'frame']
+  });
+
+  chrome.contextMenus.create({
+    id: 'persona-copy-tab',
+    title: 'Copy Tab to Workspace',
+    contexts: ['page', 'frame']
+  });
+});
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (!tab || !tab.id || !tab.url) return;
+  if (info.menuItemId !== 'persona-move-tab' && info.menuItemId !== 'persona-copy-tab') return;
+
+  const isCopy = info.menuItemId === 'persona-copy-tab';
+
+  await chrome.storage.session.set({
+    pendingTabAction: {
+      type: isCopy ? 'copy' : 'move',
+      tabId: tab.id,
+      url: tab.url,
+      title: tab.title,
+      favIconUrl: tab.favIconUrl
+    }
+  });
+
+  chrome.action.openPopup();
+});
+
 /**
  * Restores all active sessions on browser startup.
  */
@@ -351,6 +384,101 @@ async function handleCreateProfile(payload, sendResponse) {
   } catch (error) {
     console.error('Create profile failed:', error);
     sendResponse({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Handle tab move/copy action
+ */
+async function handleExecuteTabAction(payload, sendResponse) {
+  try {
+    const { actionType, tabData, workspaceId, subGroupId } = payload;
+    const profiles = await getProfiles();
+    const profile = profiles.find(p => p.id === workspaceId);
+    if (!profile) throw new Error('Workspace not found');
+
+    if (subGroupId) {
+      const g = profile.subGroups.find(sg => sg.id === subGroupId);
+      if (g) g.tabs.push(tabData);
+      else throw new Error('Subgroup not found');
+    } else {
+      profile.tabs.push(tabData);
+    }
+    
+    await saveProfiles(profiles);
+
+    if (actionType === 'move' && tabData.tabId) {
+      chrome.tabs.remove(tabData.tabId).catch(console.error);
+    }
+    
+    await chrome.storage.session.remove('pendingTabAction');
+    
+    // If the workspace window is currently open, we should physically open the tab there!
+    if (profile.windowId) {
+      chrome.tabs.create({
+        windowId: profile.windowId,
+        url: tabData.url,
+        active: false
+      }).then(createdTab => {
+        if (subGroupId) {
+            const g = profile.subGroups.find(sg => sg.id === subGroupId);
+            if (g && g.chromeGroupId) {
+              chrome.tabs.group({ tabIds: [createdTab.id], groupId: g.chromeGroupId }).catch(console.error);
+            }
+        }
+      }).catch(console.error);
+    }
+
+    sendResponse({ success: true });
+  } catch (err) {
+    console.error('Execute Tab Action failed:', err);
+    sendResponse({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Handle Tab Group Imports
+ */
+async function handleImportTabGroups(payload, sendResponse) {
+  try {
+    const { mode, workspaceName, accountId, targetWorkspaceId, groupsToImport } = payload;
+    const profiles = await getProfiles();
+    
+    const mappedSubGroups = groupsToImport.map(g => ({
+      id: crypto.randomUUID(),
+      name: g.title || g.color,
+      color: g.color || 'grey',
+      collapsed: g.collapsed || false,
+      tabs: g.tabs || [],
+      chromeGroupId: null
+    }));
+
+    if (mode === 'create') {
+      const profile = {
+        id: generateProfileId(),
+        name: workspaceName,
+        accountId: accountId,
+        tabs: [], 
+        subGroups: mappedSubGroups,
+        createdAt: Date.now(),
+        lastOpened: null,
+        windowId: null,
+        isHibernated: true
+      };
+      profiles.push(profile);
+    } else if (mode === 'add') {
+      const profile = profiles.find(p => p.id === targetWorkspaceId);
+      if (!profile) throw new Error('Target Workspace not found');
+      profile.subGroups = [...(profile.subGroups || []), ...mappedSubGroups];
+    } else {
+      throw new Error('Invalid import mode');
+    }
+
+    await saveProfiles(profiles);
+    sendResponse({ success: true });
+  } catch (err) {
+    console.error('Import Tab Groups failed:', err);
+    sendResponse({ success: false, error: err.message });
   }
 }
 
@@ -940,6 +1068,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const url = request.payload?.mode === 'create' ? 'popup.html?mode=create' : 'popup.html';
     openCenteredPopup(url, 400, 600);
     sendResponse({ success: true });
+    return true;
+  }
+
+  if (request.action === "IMPORT_TAB_GROUPS") {
+    handleImportTabGroups(request.payload, sendResponse);
+    return true;
+  }
+  
+  if (request.action === "EXECUTE_TAB_ACTION") {
+    handleExecuteTabAction(request.payload, sendResponse);
     return true;
   }
 });

@@ -7,9 +7,12 @@ It works by capturing session cookies and storing them locally. Switching a work
 ## 🚀 Features
 
 - **Workspace Management**: Organize your work into named contexts (e.g., "Dev", "Work", "Personal"). Each workspace remembers its own tabs.
+- **Sub-groups (Chrome Tab Groups)**: Workspaces automatically capture and restore native Chrome Tab Groups — names, colors, and collapsed state are all preserved.
+- **Import Tab Groups**: Scan your current browser window for native Tab Groups and import them into a new or existing workspace with a single click.
+- **Move / Copy Tabs**: Right-click any page and select "Move Tab to Workspace" or "Copy Tab to Workspace" to instantly send it to any workspace or sub-group.
 - **Default Workspace**: Tag a specific workspace as "Default" to open it instantly via shortcut.
 - **Workspace Switcher**: A Raycast-style modal (`Alt+Shift+D`) for fuzzy searching and switching between workspaces with arrow keys.
-- **Command Palette**: A global palette (`Alt+Shift+S`) to search across all open tabs in all workspaces and execute actions like "Add Account" or "Sign Out All".
+- **Command Palette**: A global palette (`Alt+Shift+S`) to search across all open tabs, move/copy the active tab to any workspace, and execute quick actions.
 - **Multi-Account Switching**: Save multiple profiles for the same website and swap between them instantly.
 - **Premium Glassmorphic UI**: A stunning, modern interface with glassmorphism, soft shadows, and smooth micro-animations.
 - **Smart Hibernation**: Inactive workspaces are "hibernated" to save memory, closing their windows but preserving all tabs for instant restoration.
@@ -61,6 +64,8 @@ This extension requires specific permissions to function:
 - **`cookies`**: Essential for reading the current session to save it and injecting saved cookies to switch accounts.
 - **`storage`**: Used to save your account lists and active session IDs locally.
 - **`tabs` & `activeTab`**: Required to detect the current website domain and reload the page after switching accounts.
+- **`tabGroups`**: Required to capture and restore native Chrome Tab Groups within workspaces.
+- **`contextMenus`**: Powers the right-click "Move/Copy Tab to Workspace" actions.
 - **`scripting`**: Used to safely inject a script into the page to scrape the user's name and avatar for the UI.
 - **`<all_urls>`**: Required to allow the extension to switch accounts on any website. This is hardened with a strict **Content Security Policy** and **HttpOnly Flag Assistance** to prevent session theft.
 
