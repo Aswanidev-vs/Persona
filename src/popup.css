@@ -1001,3 +1001,47 @@ body::-webkit-scrollbar-thumb:hover {
 button:focus:not(:focus-visible) {
   outline: none;
 }
+
+/* Sub-group UI */
+.subgroup-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 14px;
+  background-color: var(--bg-hover, #f3f4f6);
+  border-bottom: 1px solid var(--border-light, #e5e7eb);
+}
+
+.subgroup-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background-color: var(--group-color, #80868b);
+  margin-right: 8px;
+}
+
+.subgroup-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.subgroup-tabs-container {
+  padding-left: 12px;
+  border-left: 2px solid var(--group-color, #e5e7eb);
+  margin-left: 19px;
+  margin-top: 4px;
+  margin-bottom: 8px;
+}
+
+/* Chrome Tab Group Default Colors */
+:root {
+  --tab-color-grey: #bdc1c6;
+  --tab-color-blue: #8ab4f8;
+  --tab-color-red: #f28b82;
+  --tab-color-yellow: #fde293;
+  --tab-color-green: #81c995;
+  --tab-color-pink: #ff8bcb;
+  --tab-color-purple: #c58af9;
+  --tab-color-cyan: #78d9ec;
+  --tab-color-orange: #fcad70;
+}

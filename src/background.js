@@ -309,7 +309,7 @@ async function saveProfiles(profiles) {
  */
 async function handleCreateProfile(payload, sendResponse) {
   try {
-    const { name, accountId, tabs } = payload;
+    const { name, accountId, tabs, subGroups, snapshotWindowId } = payload;
     
     if (!name || !accountId) {
       throw new Error('Profile name and account ID are required');
@@ -322,11 +322,21 @@ async function handleCreateProfile(payload, sendResponse) {
       throw new Error('A profile with this name already exists');
     }
 
+    let finalTabs = tabs || [];
+    let finalSubGroups = subGroups || [];
+
+    if (snapshotWindowId) {
+      const extracted = await extractProfileTabsData(snapshotWindowId);
+      finalTabs = extracted.ungroupedTabs;
+      finalSubGroups = extracted.subGroups;
+    }
+
     const profile = {
       id: generateProfileId(),
       name: name,
       accountId: accountId,
-      tabs: tabs || [],
+      tabs: finalTabs,
+      subGroups: finalSubGroups,
       createdAt: Date.now(),
       lastOpened: null,
       windowId: null,
@@ -391,12 +401,62 @@ async function handleOpenProfile(payload, sendResponse) {
     const accounts = data.globalAccounts || [];
     const account = accounts.find(acc => acc.id === profile.accountId);
 
-    // Create new window with profile tabs
-    const tabUrls = profile.tabs.map(tab => tab.url);
+    // Determine URLs for initial window creation
+    const hasUngrouped = profile.tabs && profile.tabs.length > 0;
+    const hasSubGroups = profile.subGroups && profile.subGroups.length > 0;
+    
+    let initialUrls = ['chrome://newtab'];
+    if (hasUngrouped) {
+      initialUrls = profile.tabs.map(tab => tab.url);
+    } else if (!hasSubGroups) {
+      initialUrls = ['chrome://newtab'];
+    }
+
     const newWindow = await chrome.windows.create({
-      url: tabUrls.length > 0 ? tabUrls : ['chrome://newtab'],
+      url: initialUrls,
       focused: true
     });
+
+    // Restore subgroups
+    if (hasSubGroups) {
+      for (const subGroup of profile.subGroups) {
+        if (!subGroup.tabs || subGroup.tabs.length === 0) continue;
+        
+        const tabIds = [];
+        for (const tab of subGroup.tabs) {
+          const createdTab = await chrome.tabs.create({
+            windowId: newWindow.id,
+            url: tab.url,
+            active: false
+          });
+          tabIds.push(createdTab.id);
+        }
+        
+        if (tabIds.length > 0) {
+          const groupId = await chrome.tabs.group({
+            tabIds: tabIds,
+            createProperties: { windowId: newWindow.id }
+          });
+          
+          await chrome.tabGroups.update(groupId, {
+            title: subGroup.name,
+            color: subGroup.color,
+            collapsed: subGroup.collapsed || false
+          });
+          
+          subGroup.chromeGroupId = groupId;
+        }
+      }
+      
+      // If we used the fallback 'chrome://newtab', we can remove it now
+      if (!hasUngrouped) {
+        const tabsInWindow = await chrome.tabs.query({ windowId: newWindow.id });
+        const newTab = tabsInWindow.find(t => t.url === 'chrome://newtab/' || t.pendingUrl === 'chrome://newtab/');
+        if (newTab && tabsInWindow.length > 1) {
+          await chrome.tabs.remove(newTab.id).catch(e => console.log('Silently ignoring newtab removal error', e));
+        }
+      }
+    }
 
     // Update profile with window ID and last opened time
     profile.windowId = newWindow.id;
@@ -418,6 +478,53 @@ async function handleOpenProfile(payload, sendResponse) {
 }
 
 /**
+ * Helper to extract tabs and subgroups from a window
+ */
+async function extractProfileTabsData(windowId) {
+  const tabs = await chrome.tabs.query({ windowId: windowId });
+  const chromeGroups = await chrome.tabGroups.query({ windowId: windowId }).catch(() => []);
+  
+  const ungroupedTabs = [];
+  const groupMap = {};
+
+  for (const g of chromeGroups) {
+    groupMap[g.id] = {
+      id: crypto.randomUUID(),
+      name: g.title || '',
+      color: g.color || 'grey',
+      collapsed: g.collapsed || false,
+      tabs: [],
+      chromeGroupId: g.id 
+    };
+  }
+
+  for (const tab of tabs) {
+    if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) continue;
+    
+    const tabObj = {
+      url: tab.url,
+      title: tab.title || 'Untitled',
+      favIconUrl: tab.favIconUrl || null
+    };
+
+    if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE && groupMap[tab.groupId]) {
+      groupMap[tab.groupId].tabs.push(tabObj);
+    } else {
+      ungroupedTabs.push(tabObj);
+    }
+  }
+
+  const subGroups = [];
+  for (const g of Object.values(groupMap)) {
+    if (g.tabs.length > 0) {
+      subGroups.push(g);
+    }
+  }
+
+  return { ungroupedTabs, subGroups };
+}
+
+/**
  * Save current window tabs to a profile
  */
 async function handleSaveTabsToProfile(payload, sendResponse) {
@@ -430,23 +537,15 @@ async function handleSaveTabsToProfile(payload, sendResponse) {
       throw new Error('Profile not found');
     }
 
-    // Get all tabs from the window
-    const tabs = await chrome.tabs.query({ windowId: windowId });
-    
-    // Save tab data (URL, title, favicon)
-    const tabData = tabs
-      .filter(tab => tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://'))
-      .map(tab => ({
-        url: tab.url,
-        title: tab.title || 'Untitled',
-        favIconUrl: tab.favIconUrl || null
-      }));
+    const { ungroupedTabs, subGroups } = await extractProfileTabsData(windowId);
 
-    profiles[profileIndex].tabs = tabData;
+    profiles[profileIndex].tabs = ungroupedTabs;
+    profiles[profileIndex].subGroups = subGroups;
     await saveProfiles(profiles);
 
-    console.log('Tabs saved to profile:', profile.name, 'Tab count:', tabData.length);
-    sendResponse({ success: true, tabs: tabData });
+    const totalTabs = ungroupedTabs.length + subGroups.reduce((acc, g) => acc + g.tabs.length, 0);
+    console.log('Tabs saved to profile:', profiles[profileIndex].name, 'Tab count:', totalTabs);
+    sendResponse({ success: true, tabs: ungroupedTabs }); // Popup uses this to simply check success
   } catch (error) {
     console.error('Save tabs failed:', error);
     sendResponse({ success: false, error: error.message });
@@ -598,16 +697,9 @@ async function handleHibernateProfile(payload, sendResponse) {
     if (profile.windowId) {
       try {
         // Save tabs before closing
-        const tabs = await chrome.tabs.query({ windowId: profile.windowId });
-        const tabData = tabs
-          .filter(tab => tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://'))
-          .map(tab => ({
-            url: tab.url,
-            title: tab.title || 'Untitled',
-            favIconUrl: tab.favIconUrl || null
-          }));
-
-        profiles[profileIndex].tabs = tabData;
+        const { ungroupedTabs, subGroups } = await extractProfileTabsData(profile.windowId);
+        profiles[profileIndex].tabs = ungroupedTabs;
+        profiles[profileIndex].subGroups = subGroups;
         
         // Close the window
         await chrome.windows.remove(profile.windowId);

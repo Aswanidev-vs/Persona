@@ -512,26 +512,21 @@ async function saveProfile() {
   btn.textContent = 'Creating...';
 
   try {
-    let tabs = [];
+    let payload = { name, accountId };
     
     if (saveTabs) {
-      // Get current window tabs
-      const windows = await chrome.windows.getAll({ populate: true });
+      const windows = await chrome.windows.getAll({ populate: false });
       if (windows.length > 0) {
-        const currentWindow = windows[0];
-        tabs = currentWindow.tabs
-          .filter(tab => tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://'))
-          .map(tab => ({
-            url: tab.url,
-            title: tab.title || 'Untitled',
-            favIconUrl: tab.favIconUrl || null
-          }));
+        payload.snapshotWindowId = windows[0].id;
       }
+    } else {
+      payload.tabs = [];
+      payload.subGroups = [];
     }
 
     const response = await chrome.runtime.sendMessage({
       action: "CREATE_PROFILE",
-      payload: { name, accountId, tabs }
+      payload: payload
     });
 
     if (response && response.success) {
@@ -581,7 +576,7 @@ async function openProfileDetails(profileId) {
     }
 
     // Render tabs
-    renderProfileTabs(profile.tabs);
+    renderProfileTabs(profile.tabs, profile.subGroups || []);
 
   } catch (err) {
     console.error("Error opening profile details:", err);
@@ -591,11 +586,11 @@ async function openProfileDetails(profileId) {
 /**
  * Render profile tabs
  */
-function renderProfileTabs(tabs) {
+function renderProfileTabs(tabs, subGroups = []) {
   const listEl = document.getElementById('profile-tabs-list');
   listEl.textContent = '';
 
-  if (tabs.length === 0) {
+  if (tabs.length === 0 && subGroups.length === 0) {
     const emptyMsg = document.createElement('div');
     emptyMsg.className = 'empty-state';
     emptyMsg.textContent = 'No tabs in this workspace';
@@ -603,7 +598,8 @@ function renderProfileTabs(tabs) {
     return;
   }
 
-  tabs.forEach((tab, index) => {
+  // Create a helper to construct single tab DOM
+  const createTabEl = (tab, isRemovable, onRemove) => {
     const el = document.createElement('div');
     el.className = 'profile-tab-item';
 
@@ -639,20 +635,52 @@ function renderProfileTabs(tabs) {
 
     info.appendChild(titleDiv);
     info.appendChild(urlDiv);
-
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'tab-remove-btn';
-    removeBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"/></svg>';
-    removeBtn.title = 'Remove tab';
-    removeBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      removeTabFromProfile(index);
-    });
-
     el.appendChild(info);
-    el.appendChild(removeBtn);
 
-    listEl.appendChild(el);
+    if (isRemovable) {
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'tab-remove-btn';
+      removeBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"/></svg>';
+      removeBtn.title = 'Remove tab';
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        onRemove();
+      });
+      el.appendChild(removeBtn);
+    }
+    return el;
+  };
+
+  // Render subGroups first
+  subGroups.forEach((group, groupIndex) => {
+    const groupHeader = document.createElement('div');
+    groupHeader.className = 'subgroup-header';
+    groupHeader.style.setProperty('--group-color', `var(--tab-color-${group.color}, #80868b)`); // fallback grey
+    groupHeader.innerHTML = `<span class="subgroup-dot"></span><span class="subgroup-title">${group.name || group.color + ' group'}</span>`;
+    listEl.appendChild(groupHeader);
+
+    const groupTabsContainer = document.createElement('div');
+    groupTabsContainer.className = 'subgroup-tabs-container';
+
+    group.tabs.forEach((tab, tabIndex) => {
+      const tabEl = createTabEl(tab, false, null); // Cannot easily remove tabs nested in subgroup from popup for now
+      groupTabsContainer.appendChild(tabEl);
+    });
+    listEl.appendChild(groupTabsContainer);
+  });
+
+  // Render ungrouped tabs title if needed
+  if (tabs.length > 0 && subGroups.length > 0) {
+    const divider = document.createElement('div');
+    divider.className = 'subgroup-header';
+    divider.style.setProperty('--group-color', `transparent`);
+    divider.innerHTML = `<span class="subgroup-dot" style="background: transparent;"></span><span class="subgroup-title" style="color:var(--text-secondary)">Ungrouped Tabs</span>`;
+    listEl.appendChild(divider);
+  }
+
+  tabs.forEach((tab, index) => {
+    const tabEl = createTabEl(tab, true, () => removeTabFromProfile(index));
+    listEl.appendChild(tabEl);
   });
 }
 
