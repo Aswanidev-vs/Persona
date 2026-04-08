@@ -227,6 +227,26 @@ async function handleSwitchSession(payload, sendResponse) {
 
     const domain = targetAccount.domain;
 
+    if (domain.startsWith('google.') || domain === 'gmail.com' || domain === 'youtube.com') {
+      let targetUrl = `https://www.${domain}`;
+      if (targetAccount.authuser !== null && targetAccount.authuser !== undefined) {
+        targetUrl = `https://www.google.com/webhp?authuser=${targetAccount.authuser}`;
+      } else if (targetAccount.email) {
+        targetUrl = `https://accounts.google.com/AccountChooser?Email=${encodeURIComponent(targetAccount.email)}&continue=${encodeURIComponent('https://www.google.com')}`;
+      } else {
+        targetUrl = `https://accounts.google.com`;
+      }
+      chrome.windows.create({ url: targetUrl, focused: true });
+      
+      const finalStorage = await chrome.storage.local.get("activeSessions");
+      const finalActiveSessions = finalStorage.activeSessions || {};
+      finalActiveSessions[domain] = accountId;
+      await chrome.storage.local.set({ activeSessions: finalActiveSessions });
+      
+      sendResponse({ success: true });
+      return;
+    }
+
     // 1. Inject SAVED cookies (Merging) using the hardened helper
     await injectCookies(targetAccount.cookies, domain);
 
@@ -238,21 +258,8 @@ async function handleSwitchSession(payload, sendResponse) {
     const tabs = await chrome.tabs.query({ url: `*://*.${domain}/*` });
     tabs.forEach(tab => chrome.tabs.reload(tab.id));
 
-    // For Google domains, force the correct account using authuser index or Email hint
-    // And redirect specifically to www.google.com/webhp as requested by user
-    let targetUrl = `https://www.${domain}`;
-    if (domain === 'google.com') {
-      if (targetAccount.authuser !== null && targetAccount.authuser !== undefined) {
-        targetUrl = `https://www.google.com/webhp?authuser=${targetAccount.authuser}`;
-      } else if (targetAccount.email) {
-        targetUrl = `https://accounts.google.com/AccountChooser?Email=${encodeURIComponent(targetAccount.email)}&continue=${encodeURIComponent('https://www.google.com/webhp')}`;
-      } else {
-        targetUrl = `https://www.google.com/webhp`;
-      }
-    }
-
     chrome.windows.create({
-      url: targetUrl,
+      url: `https://www.${domain}`,
       focused: true
     });
 
