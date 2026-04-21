@@ -213,6 +213,17 @@ async function renderAccounts() {
         el.appendChild(info);
         el.appendChild(domainDiv);
 
+        // Add Delete Button
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'item-delete-btn';
+        deleteBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"/></svg>';
+        deleteBtn.title = 'Remove account';
+        deleteBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          removeAccount(acc.id, acc.name);
+        });
+        el.appendChild(deleteBtn);
+
         el.addEventListener('click', () => switchAccount(acc.id));
         listEl.appendChild(el);
       });
@@ -367,10 +378,42 @@ async function switchAccount(id) {
 }
 
 async function signOutAll() {
-  if (!confirm("Remove all saved accounts from the extension? (You will remain logged in on websites)")) return;
+  if (!await showCustomDialog({
+    title: "Sign Out All",
+    message: "Remove all saved accounts from the extension? (You will remain logged in on websites)",
+    confirmText: "Sign Out All",
+    cancelText: "Cancel",
+    theme: "danger"
+  })) return;
   
   await chrome.storage.local.clear();
   window.close();
+}
+
+async function removeAccount(id, name) {
+  if (!await showCustomDialog({
+    title: "Remove Account",
+    message: `Are you sure you want to remove the account "${name}"?`,
+    confirmText: "Remove",
+    cancelText: "Keep",
+    theme: "danger"
+  })) return;
+  
+  try {
+    const response = await chrome.runtime.sendMessage({ 
+      action: "REMOVE_ACCOUNT", 
+      payload: { accountId: id } 
+    });
+    
+    if (response && response.success) {
+      await renderAccounts();
+    } else {
+      console.error("Failed to remove account:", response?.error);
+      await showCustomDialog({ title: "Error", message: "Failed to remove account. Please try again.", type: 'alert' });
+    }
+  } catch (err) {
+    console.error("Error removing account:", err);
+  }
 }
 
 // ============================================================================
@@ -524,12 +567,12 @@ async function saveProfile() {
   const saveTabs = document.getElementById('save-current-tabs').checked;
 
   if (!name) {
-    alert('Please enter a workspace name');
+    await showCustomDialog({ title: "Input Required", message: "Please enter a workspace name", type: 'alert' });
     return;
   }
 
   if (!accountId) {
-    alert('Please select an account');
+    await showCustomDialog({ title: "Input Required", message: "Please select an account", type: 'alert' });
     return;
   }
 
@@ -559,11 +602,11 @@ async function saveProfile() {
       closeCreateProfileView();
       await renderProfiles();
     } else {
-      alert('Failed to create workspace: ' + (response?.error || 'Unknown error'));
+      await showCustomDialog({ title: "Error", message: 'Failed to create workspace: ' + (response?.error || 'Unknown error'), type: 'alert' });
     }
   } catch (err) {
     console.error("Create profile error:", err);
-    alert('Failed to create workspace');
+    await showCustomDialog({ title: "Error", message: 'Failed to create workspace', type: 'alert' });
   } finally {
     btn.disabled = false;
     btn.textContent = 'Create Workspace';
@@ -739,13 +782,13 @@ async function openProfile() {
     if (response && response.success) {
       window.close();
     } else {
-      alert('Failed to open workspace: ' + (response?.error || 'Unknown error'));
+      await showCustomDialog({ title: "Error", message: 'Failed to open workspace: ' + (response?.error || 'Unknown error'), type: 'alert' });
       btn.disabled = false;
       btn.textContent = 'Open Workspace';
     }
   } catch (err) {
     console.error("Open profile error:", err);
-    alert('Failed to open workspace');
+    await showCustomDialog({ title: "Error", message: 'Failed to open workspace', type: 'alert' });
     btn.disabled = false;
     btn.textContent = 'Open Workspace';
   }
@@ -779,11 +822,11 @@ async function saveTabsToProfile() {
       // Refresh profile details
       await openProfileDetails(currentProfileId);
     } else {
-      alert('Failed to save tabs: ' + (response?.error || 'Unknown error'));
+      await showCustomDialog({ title: "Error", message: 'Failed to save tabs: ' + (response?.error || 'Unknown error'), type: 'alert' });
     }
   } catch (err) {
     console.error("Save tabs error:", err);
-    alert('Failed to save tabs');
+    await showCustomDialog({ title: "Error", message: 'Failed to save tabs', type: 'alert' });
   } finally {
     btn.disabled = false;
     btn.textContent = 'Save Current Tabs';
@@ -809,11 +852,11 @@ async function hibernateProfile() {
     if (response && response.success) {
       await openProfileDetails(currentProfileId);
     } else {
-      alert('Failed to hibernate workspace: ' + (response?.error || 'Unknown error'));
+      await showCustomDialog({ title: "Error", message: 'Failed to hibernate workspace: ' + (response?.error || 'Unknown error'), type: 'alert' });
     }
   } catch (err) {
     console.error("Hibernate profile error:", err);
-    alert('Failed to hibernate workspace');
+    await showCustomDialog({ title: "Error", message: 'Failed to hibernate workspace', type: 'alert' });
   } finally {
     btn.disabled = false;
     btn.textContent = 'Hibernate';
@@ -826,7 +869,13 @@ async function hibernateProfile() {
 async function deleteProfile() {
   if (!currentProfileId) return;
 
-  if (!confirm('Are you sure you want to delete this workspace? This action cannot be undone.')) {
+  if (!await showCustomDialog({
+    title: "Delete Workspace",
+    message: "Are you sure you want to delete this workspace? This action cannot be undone.",
+    confirmText: "Delete",
+    cancelText: "Cancel",
+    theme: "danger"
+  })) {
     return;
   }
 
@@ -843,7 +892,7 @@ async function deleteProfile() {
       closeProfileDetailsView();
       await renderProfiles();
     } else {
-      alert('Failed to delete workspace: ' + (response?.error || 'Unknown error'));
+      await showCustomDialog({ title: "Error", message: 'Failed to delete workspace: ' + (response?.error || 'Unknown error'), type: 'alert' });
     }
   } catch (err) {
     console.error("Delete profile error:", err);
@@ -888,7 +937,7 @@ async function saveTabToProfile() {
   const title = document.getElementById('tab-title').value.trim();
 
   if (!url) {
-    alert('Please enter a URL');
+    await showCustomDialog({ title: "Input Required", message: 'Please enter a URL', type: 'alert' });
     return;
   }
 
@@ -896,7 +945,7 @@ async function saveTabToProfile() {
   try {
     new URL(url);
   } catch (e) {
-    alert('Please enter a valid URL');
+    await showCustomDialog({ title: "Invalid Input", message: 'Please enter a valid URL', type: 'alert' });
     return;
   }
 
@@ -914,11 +963,11 @@ async function saveTabToProfile() {
       closeAddTabView();
       await openProfileDetails(currentProfileId);
     } else {
-      alert('Failed to add tab: ' + (response?.error || 'Unknown error'));
+      await showCustomDialog({ title: "Error", message: 'Failed to add tab: ' + (response?.error || 'Unknown error'), type: 'alert' });
     }
   } catch (err) {
     console.error("Add tab error:", err);
-    alert('Failed to add tab');
+    await showCustomDialog({ title: "Error", message: 'Failed to add tab', type: 'alert' });
   } finally {
     btn.disabled = false;
     btn.textContent = 'Add Tab';
@@ -940,11 +989,11 @@ async function removeTabFromProfile(tabIndex) {
     if (response && response.success) {
       await openProfileDetails(currentProfileId);
     } else {
-      alert('Failed to remove tab: ' + (response?.error || 'Unknown error'));
+      await showCustomDialog({ title: "Error", message: 'Failed to remove tab: ' + (response?.error || 'Unknown error'), type: 'alert' });
     }
   } catch (err) {
     console.error("Remove tab error:", err);
-    alert('Failed to remove tab');
+    await showCustomDialog({ title: "Error", message: 'Failed to remove tab', type: 'alert' });
   }
 }
 
@@ -972,7 +1021,13 @@ async function toggleDefaultProfile(profileId) {
  * Quick delete profile from list (without opening details)
  */
 async function quickDeleteProfile(profileId, profileName) {
-  if (!confirm(`Delete workspace "${profileName}"? This action cannot be undone.`)) {
+  if (!await showCustomDialog({
+    title: "Delete Workspace",
+    message: `Delete workspace "${profileName}"? This action cannot be undone.`,
+    confirmText: "Delete",
+    cancelText: "Cancel",
+    theme: "danger"
+  })) {
     return;
   }
 
@@ -985,11 +1040,11 @@ async function quickDeleteProfile(profileId, profileName) {
     if (response && response.success) {
       await renderProfiles();
     } else {
-      alert('Failed to delete workspace: ' + (response?.error || 'Unknown error'));
+      await showCustomDialog({ title: "Error", message: 'Failed to delete workspace: ' + (response?.error || 'Unknown error'), type: 'alert' });
     }
   } catch (err) {
     console.error("Quick delete error:", err);
-    alert('Failed to delete workspace');
+    await showCustomDialog({ title: "Error", message: 'Failed to delete workspace', type: 'alert' });
   }
 }
 
@@ -1103,7 +1158,7 @@ async function loadImportableGroups() {
 
 async function executeImportGroups() {
   const checkboxes = document.querySelectorAll('.import-checkbox:checked');
-  if (checkboxes.length === 0) return alert('Select at least one group');
+  if (checkboxes.length === 0) return await showCustomDialog({ title: "Selection Required", message: 'Select at least one group', type: 'alert' });
   
   const selectedIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
   const groupsToImport = importableGroupsCache.filter(g => selectedIds.includes(g.id));
@@ -1126,7 +1181,7 @@ async function executeImportGroups() {
     closeImportGroupsView();
     await renderProfiles();
   } else {
-    alert('Import failed: ' + (response?.error || 'Unknown error'));
+    await showCustomDialog({ title: "Import Failed", message: 'Import failed: ' + (response?.error || 'Unknown error'), type: 'alert' });
     document.getElementById('btn-execute-import').textContent = 'Import Selected';
   }
 }
@@ -1209,7 +1264,87 @@ async function executeTabAction(workspaceId, subGroupId) {
   if (response && response.success) {
     window.close();
   } else {
-    alert('Failed to execute action: ' + (response?.error || 'Unknown error'));
+    await showCustomDialog({ title: "Action Failed", message: 'Failed to execute action: ' + (response?.error || 'Unknown error'), type: 'alert' });
   }
 }
 
+
+/**
+ * Custom Promise-based Dialog (Confirm/Alert)
+ */
+function showCustomDialog(options = {}) {
+  const {
+    title = "Confirm Action",
+    message = "Are you sure you want to proceed?",
+    confirmText = "Confirm",
+    cancelText = "Cancel",
+    type = "confirm", // 'confirm' or 'alert'
+    theme = "default" // 'default' or 'danger'
+  } = options;
+
+  return new Promise((resolve) => {
+    const modal = document.getElementById('custom-dialog');
+    const container = modal.querySelector('.modal-container');
+    const titleEl = document.getElementById('dialog-title');
+    const messageEl = document.getElementById('dialog-message');
+    const confirmBtn = document.getElementById('dialog-confirm');
+    const cancelBtn = document.getElementById('dialog-cancel');
+
+    if (!modal || !container || !titleEl || !messageEl || !confirmBtn || !cancelBtn) {
+      console.error("Dialog elements not found");
+      resolve(type === 'confirm' ? window.confirm(message) : (window.alert(message), true));
+      return;
+    }
+
+    // Apply theme
+    container.classList.remove('danger');
+    if (theme === 'danger') {
+      container.classList.add('danger');
+    }
+
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+    confirmBtn.textContent = confirmText;
+    cancelBtn.textContent = cancelText;
+    
+    if (type === 'alert') {
+      cancelBtn.classList.add('hidden');
+    } else {
+      cancelBtn.classList.remove('hidden');
+    }
+
+    modal.classList.remove('hidden');
+
+    const handleConfirm = () => {
+      cleanup();
+      resolve(true);
+    };
+
+    const handleCancel = () => {
+      cleanup();
+      resolve(false);
+    };
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleConfirm();
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        handleCancel();
+      }
+    };
+
+    const cleanup = () => {
+      modal.classList.add('hidden');
+      confirmBtn.removeEventListener('click', handleConfirm);
+      cancelBtn.removeEventListener('click', handleCancel);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+
+    confirmBtn.addEventListener('click', handleConfirm);
+    cancelBtn.addEventListener('click', handleCancel);
+    document.addEventListener('keydown', handleKeyDown);
+  });
+}

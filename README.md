@@ -14,7 +14,7 @@ It works by capturing session cookies and storing them locally. Switching a work
 - **Default Workspace**: Tag a specific workspace as "Default" to open it instantly via shortcut.
 - **Workspace Switcher**: A Raycast-style modal (`Alt+Shift+D`) for fuzzy searching and switching between workspaces with arrow keys.
 - **Command Palette**: A global palette (`Alt+Shift+S`) to search across all open tabs, move/copy the active tab to any workspace, and execute quick actions.
-- **Multi-Account Switching**: Save multiple profiles for the same website and swap between them instantly.
+- **Multi-Account Switching**: Save multiple profiles for the same website and swap between them instantly. Easily remove specific accounts when no longer needed.
 - **Premium Glassmorphic UI**: A stunning, modern interface with glassmorphism, soft shadows, and smooth micro-animations.
 - **Smart Hibernation**: Inactive workspaces are "hibernated" to save memory, closing their windows but preserving all tabs for instant restoration.
 - **Keyboard Shortcuts**: 

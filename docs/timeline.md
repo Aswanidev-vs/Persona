@@ -2,6 +2,16 @@
 
 This document tracks the evolution of the Persona extension, providing a history of major features and technical updates for contributors.
 
+## v2.3.1 - Specific Account Removal (2026-04-21)
+
+This update adds granular control over saved accounts, allowing users to remove specific entries without clearing their entire session history.
+
+### New Features
+- **Individual Account Removal**: Each item in the "Accounts" list now features a delete button (visible on hover) to remove specific saved sessions.
+- **Confirmation Protection**: Added confirmation dialogs to prevent accidental account deletion.
+
+---
+
 ## v2.3.0 - Persistent Window & UI Polish (2026-04-08)
 
 This update focuses on quality-of-life improvements and persistence for heavy users.
